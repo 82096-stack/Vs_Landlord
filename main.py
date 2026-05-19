@@ -103,6 +103,8 @@ def rules_payload() -> dict:
                     "rules_classic_1",
                     "rules_classic_2",
                     "rules_classic_3",
+                    "rules_classic_4",
+                    "rules_classic_5",
                 ],
             },
             {
@@ -112,6 +114,28 @@ def rules_payload() -> dict:
                     "rules_extended_2",
                     "rules_extended_3",
                     "rules_extended_4",
+                    "rules_extended_5",
+                    "rules_extended_6",
+                ],
+            },
+            {
+                "title_key": "rules_turn_title",
+                "body_keys": [
+                    "rules_turn_1",
+                    "rules_turn_2",
+                    "rules_turn_3",
+                    "rules_turn_4",
+                    "rules_turn_5",
+                ],
+            },
+            {
+                "title_key": "rules_combo_title",
+                "body_keys": [
+                    "rules_combo_1",
+                    "rules_combo_2",
+                    "rules_combo_3",
+                    "rules_combo_4",
+                    "rules_combo_5",
                 ],
             },
             {
@@ -120,6 +144,8 @@ def rules_payload() -> dict:
                     "rules_scoring_1",
                     "rules_scoring_2",
                     "rules_scoring_3",
+                    "rules_scoring_4",
+                    "rules_scoring_5",
                 ],
             },
             {
@@ -128,6 +154,7 @@ def rules_payload() -> dict:
                     "rules_pvp_1",
                     "rules_pvp_2",
                     "rules_pvp_3",
+                    "rules_pvp_4",
                 ],
             },
         ]
@@ -204,6 +231,42 @@ async def start_bound_pvp_round(room_name: str, supabase_room: dict) -> tuple[bo
     room.round_finished_callback = finish_round
     await room.start_game()
     return True, "pvp_started", pvp_public_room(supabase_room)
+
+
+async def disband_pvp_room_for_all(room_name: str, actor_username: str) -> tuple[bool, str]:
+    ok, message = pvp_manager.disband_room(actor_username, room_name)
+    if not ok:
+        return ok, message
+
+    live_id = pvp_live_rooms.pop(room_name, None)
+    live_room = manager.get_room(live_id) if live_id else None
+    affected: list[ClientSession] = [
+        session
+        for session in list(active_sessions.values())
+        if session.pvp_room_name == room_name
+    ]
+    if live_room is not None:
+        await live_room._broadcast("pvp_room_disbanded", {
+            "room_name": room_name,
+            "message": message,
+            "message_key": "room_disbanded",
+        })
+        manager.remove_room(live_room.room_id)
+
+    for session in affected:
+        session.pvp_room_name = None
+        if session.room_id == live_id:
+            session.room_id = None
+            session.seat = None
+        try:
+            await send_ws(session.ws, "pvp_room_disbanded", {
+                "room_name": room_name,
+                "message": message,
+                "message_key": "room_disbanded",
+            })
+        except Exception:
+            pass
+    return ok, message
 
 
 async def start_local_ai_game(session: ClientSession, mode: str, match_type: str, request_id: str | None) -> None:
@@ -502,6 +565,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="toolbar" style="margin-top:8px">
         <button id="startRoomBtn" class="ok hidden" onclick="send({type:'start_game'})" data-i18n="start_game"></button>
         <button id="startPvpBtn" class="ok hidden" onclick="send({type:'pvp_start_match',room_name:state.pvpRoom})" data-i18n="start_match"></button>
+        <button class="secondary" onclick="showView(state.username?'home':'auth')" data-i18n="back"></button>
       </div>
     </div>
     <div class="panel wide">
@@ -523,9 +587,9 @@ const LANGS=[
  ['zh','汉语'],['en','English'],['hi','हिन्दी'],['es','Español'],['fr','Français'],['ar','العربية'],['bn','বাংলা'],['pt','Português'],['ru','Русский'],['ur','اردو']
 ];
 const BASE={
- app_title:'Dou Dizhu WebSocket',login:'Login',register:'Register',username:'Username',password:'Password',password_hint:'Press Control+P while this field is focused to show or hide the password.',ai_demo:'AI match',start_demo:'Start demo',welcome:'Welcome',local_ai:'Local AI match',stats:'Stats',online_pvp:'Online PVP',rules:'Rules',logout:'Logout',start_game:'Start game',back:'Back',create_room:'Create room',join_room:'Join room',room_name:'Room name',room_password_optional:'Room password (optional)',refresh:'Refresh',rooms:'Rooms',game_table:'Game table',your_hand:'Your hand',log:'Log',mode_classic:'Two vs one',mode_extended:'Three vs one',ranked:'Ranked',casual:'Casual',start_match:'Start match',seat:'Seat',empty:'Empty',landlord:'Landlord',farmer:'Farmer',connected:'Connected',disconnected:'Disconnected',waiting:'Waiting',playing:'Playing',finished:'Finished',completed:'Completed',lobby:'Lobby',bid:'Bid',no_bid:'No bid',call_landlord:'Call landlord',dont_call:'Do not call',rob_landlord:'Rob landlord',dont_rob:'Do not rob',reveal:'Reveal',dont_reveal:'Do not reveal',report:'Report',dont_report:'Do not report',play:'Play',pass:'Pass',round:'Round',score:'Score',winner:'Winner',base_score:'Base score',multiplier:'Multiplier',bomb:'Bomb/Rocket',reveal_factor:'Reveal',redeal_factor:'Redeal',report_factor:'Report',marker_factor:'Joker marker',marker_card:'Marked card',marker_holder:'Marked-card holder',bottom_cards:'Bottom cards',spring:'Spring',reverse_spring:'Reverse spring',total:'Total',small_joker:'Small Joker',big_joker:'Big Joker',single:'Single',pair:'Pair',trio:'Trio',trio_single:'Trio with single',trio_pair:'Trio with pair',straight:'Straight',pair_straight:'Pair straight',trio_straight:'Plane',airplane_single:'Plane with singles',airplane_pair:'Plane with pairs',four_two_single:'Four with two',four_two_pair:'Four with two pairs',rocket:'Rocket',room_created:'Room created.',room_joined:'Joined room.',login_success:'Login successful.',register_success:'Registration successful.',logged_out:'Logged out.',login_required:'Please log in first.',stats_updated:'Stats updated.',pvp_started:'PVP match started.',pvp_round_finished:'PVP round finished.',pvp_match_finished:'PVP match finished.',ranked_entry_ok:'Ranked entry accepted.',ranked_entry_denied:'Ranked entry denied.',room_join_failed:'Could not join room.',pvp_already_playing:'This PVP match is already playing.',pvp_seat_failed:'Could not create PVP seats.',error:'Error',rules_classic_title:'Two vs one',rules_classic_1:'One landlord plays against two farmers.',rules_classic_2:'Uses one deck and three bottom cards.',rules_classic_3:'Includes call landlord and rob landlord phases.',rules_extended_title:'Three vs one',rules_extended_1:'One landlord plays against three farmers.',rules_extended_2:'Uses two decks and eight bottom cards.',rules_extended_3:'Supports reveal and report.',rules_extended_4:'Farmers have bomb limits based on bidding.',rules_scoring_title:'Scoring',rules_scoring_1:'Ranked local matches start at 1200 points and require at least 200 points.',rules_scoring_2:'Ranked base score is 50. Bid, bombs, reveal, redeal, report, spring and joker marker multiply it.',rules_scoring_3:'Casual matches record wins and losses without rating changes.',rules_pvp_title:'Online PVP',rules_pvp_1:'The owner creates a room with password, mode and round count.',rules_pvp_2:'Players join, then the owner starts the real-time match.',rules_pvp_3:'PVP base score is 1. Rounds auto-settle and the highest final score wins.'};
+ app_title:'Dou Dizhu WebSocket',login:'Login',register:'Register',username:'Username',password:'Password',password_hint:'Press Control+P while this field is focused to show or hide the password.',ai_demo:'AI match',start_demo:'Start demo',welcome:'Welcome',local_ai:'Local AI match',stats:'Stats',online_pvp:'Online PVP',rules:'Rules',logout:'Logout',start_game:'Start game',back:'Back',create_room:'Create room',join_room:'Join room',disband_room:'Disband room',room_name:'Room name',room_password_optional:'Room password (optional)',refresh:'Refresh',rooms:'Rooms',game_table:'Game table',your_hand:'Your hand',log:'Log',mode_classic:'Two vs one',mode_extended:'Three vs one',ranked:'Ranked',casual:'Casual',start_match:'Start match',seat:'Seat',empty:'Empty',landlord:'Landlord',farmer:'Farmer',connected:'Connected',disconnected:'Disconnected',waiting:'Waiting',playing:'Playing',finished:'Finished',completed:'Completed',lobby:'Lobby',bid:'Bid',no_bid:'No bid',call_landlord:'Call landlord',dont_call:'Do not call',rob_landlord:'Rob landlord',dont_rob:'Do not rob',reveal:'Reveal',dont_reveal:'Do not reveal',report:'Report',dont_report:'Do not report',play:'Play',pass:'Pass',round:'Round',score:'Score',winner:'Winner',base_score:'Base score',multiplier:'Multiplier',bomb:'Bomb/Rocket',reveal_factor:'Reveal',redeal_factor:'Redeal',report_factor:'Report',marker_factor:'Joker marker',marker_card:'Marked card',marker_holder:'Marked-card holder',bottom_cards:'Bottom cards',spring:'Spring',reverse_spring:'Reverse spring',total:'Total',small_joker:'Small Joker',big_joker:'Big Joker',single:'Single',pair:'Pair',trio:'Trio',trio_single:'Trio with single',trio_pair:'Trio with pair',straight:'Straight',pair_straight:'Pair straight',trio_straight:'Plane',airplane_single:'Plane with singles',airplane_pair:'Plane with pairs',four_two_single:'Four with two',four_two_pair:'Four with two pairs',rocket:'Rocket',room_created:'Room created.',room_joined:'Joined room.',room_disbanded:'Room disbanded. All players were returned to the lobby.',login_success:'Login successful.',register_success:'Registration successful.',logged_out:'Logged out.',login_required:'Please log in first.',stats_updated:'Stats updated.',pvp_started:'PVP match started.',pvp_round_finished:'PVP round finished.',pvp_match_finished:'PVP match finished.',ranked_entry_ok:'Ranked entry accepted.',ranked_entry_denied:'Ranked entry denied.',room_join_failed:'Could not join room.',pvp_already_playing:'This PVP match is already playing.',pvp_seat_failed:'Could not create PVP seats.',error:'Error',rules_classic_title:'Goal: two farmers vs one landlord',rules_classic_1:'Classic mode has 3 players. One player becomes the landlord, and the other two players are farmers on the same team.',rules_classic_2:'The deck has 54 cards. Each player receives 17 cards, and 3 bottom cards are left face down for the future landlord.',rules_classic_3:'The player who receives the marked card starts the landlord decision. A player may call landlord, then later players may rob landlord.',rules_classic_4:'After bidding, the landlord takes the 3 bottom cards into their hand and plays first.',rules_classic_5:'The landlord wins by emptying their hand first. The farmers win if either farmer empties their hand first.',rules_extended_title:'Three vs one mode',rules_extended_1:'Extended mode has 4 players. One landlord fights three farmers.',rules_extended_2:'It uses two decks. Each player receives 25 cards, and the landlord receives 8 bottom cards.',rules_extended_3:'The landlord may reveal their hand. Revealing increases risk but also increases the score multiplier.',rules_extended_4:'Some hands may report. Report and double report add extra multipliers.',rules_extended_5:'Farmers have bomb limits based on bidding. A farmer who bid higher can usually use more bombs.',rules_extended_6:'Straights are more flexible in this mode, including A2345 style sequences.',rules_turn_title:'How a turn works',rules_turn_1:'The first player in a trick may play any legal combination from their hand.',rules_turn_2:'The next player must play the same kind of combination with a higher main rank, or pass.',rules_turn_3:'Bombs can beat normal combinations. Rockets beat bombs and all normal combinations.',rules_turn_4:'If everyone else passes, the last player who played cards starts a new trick and may choose any legal combination.',rules_turn_5:'Keep selecting cards from your hand, then press Play. If you cannot or do not want to beat the table, press Pass.',rules_combo_title:'Common card combinations',rules_combo_1:'Single: one card. Pair: two cards of the same rank. Trio: three cards of the same rank.',rules_combo_2:'Trio with single or pair: three of a kind plus one extra card or one pair.',rules_combo_3:'Straight: at least five consecutive single cards. Pair straight: at least three consecutive pairs.',rules_combo_4:'Plane: consecutive trios, optionally with matching extra singles or pairs.',rules_combo_5:'Bomb: four or more cards of the same rank. Rocket: jokers together, the strongest combination.',rules_scoring_title:'Scoring',rules_scoring_1:'Ranked local matches start at 1200 points and require at least 200 points to enter.',rules_scoring_2:'If your rating is below 200, the game can refill you to 1200 points up to twice per day.',rules_scoring_3:'Ranked base score is 50. PVP base score is 1.',rules_scoring_4:'The bid is the base multiplier. Bombs, rockets, reveal, redeals, reports, spring, reverse spring and joker marker can double the score again.',rules_scoring_5:'Casual matches record wins and losses but do not change rating.',rules_pvp_title:'Online PVP',rules_pvp_1:'The owner creates a room, optionally sets a password, chooses two-vs-one or three-vs-one, and chooses the number of rounds.',rules_pvp_2:'Other players search the room list, enter the password if needed, and join the room.',rules_pvp_3:'When seats are full, the owner starts the match. Players then play in turn through the web interface.',rules_pvp_4:'After each round, scores are calculated automatically. When all rounds finish, the highest total score wins.'};
 const OV={
- zh:{app_title:'斗地主 WebSocket',login:'登录账号',register:'注册账号',username:'用户名',password:'密码',password_hint:'聚焦此密码框时按 Control+P 可显示或隐藏密码。',ai_demo:'AI 对战',start_demo:'开始演示',welcome:'欢迎',local_ai:'本地 AI 对战',stats:'查看战绩',online_pvp:'线上 PVP',rules:'阅读规则',logout:'退出登录',start_game:'开始游戏',back:'返回',create_room:'创建房间',join_room:'加入房间',room_name:'房间名',room_password_optional:'房间密码（可空）',refresh:'刷新',rooms:'房间列表',game_table:'游戏桌',your_hand:'你的手牌',log:'日志',mode_classic:'二打一',mode_extended:'三打一',ranked:'积分赛',casual:'娱乐赛',start_match:'开始比赛',seat:'座位',empty:'空',landlord:'地主',farmer:'农民',connected:'在线',disconnected:'离线',waiting:'等待中',playing:'游戏中',finished:'已结束',completed:'已完成',lobby:'大厅',bid:'叫分',no_bid:'不叫',call_landlord:'叫地主',dont_call:'不叫',rob_landlord:'抢地主',dont_rob:'不抢',reveal:'摊打',dont_reveal:'不摊打',report:'报道',dont_report:'不报道',play:'出牌',pass:'过牌',round:'轮',score:'分数',winner:'胜利者',base_score:'基本分',multiplier:'倍率',bomb:'炸弹/王炸',reveal_factor:'摊打',redeal_factor:'荒番',report_factor:'报道',marker_factor:'标记王',marker_card:'标记牌',marker_holder:'标记牌玩家',bottom_cards:'底牌',spring:'春天',reverse_spring:'反春天',total:'总分',small_joker:'小王',big_joker:'大王',single:'单张',pair:'对子',trio:'三张',trio_single:'三带一',trio_pair:'三带二',straight:'顺子',pair_straight:'连对',trio_straight:'飞机不带',airplane_single:'飞机带单',airplane_pair:'飞机带对',four_two_single:'四带二',four_two_pair:'四带两对',rocket:'王炸',room_created:'房间已创建。',room_joined:'已加入房间。',login_success:'登录成功。',register_success:'注册成功。',logged_out:'已退出登录。',login_required:'请先登录。',stats_updated:'战绩已更新。',pvp_started:'PVP 比赛已开始。',pvp_round_finished:'PVP 本轮已结算。',pvp_match_finished:'PVP 比赛已结束。',ranked_entry_ok:'可以进入积分赛。',ranked_entry_denied:'不能进入积分赛。',room_join_failed:'加入房间失败。',pvp_already_playing:'该 PVP 正在比赛中。',pvp_seat_failed:'创建 PVP 座位失败。',error:'错误',rules_classic_title:'二打一',rules_classic_1:'一名地主对战两名农民。',rules_classic_2:'使用一副牌和三张底牌。',rules_classic_3:'包含叫地主和抢地主。',rules_extended_title:'三打一',rules_extended_1:'一名地主对战三名农民。',rules_extended_2:'使用两副牌和八张底牌。',rules_extended_3:'支持摊打和报道。',rules_extended_4:'农民炸弹次数受叫分限制。',rules_scoring_title:'计分',rules_scoring_1:'本地积分赛初始 1200 分，至少 200 分可参加。',rules_scoring_2:'积分赛基本分 50，叫分、炸弹、摊打、荒番、报道、春天和标记王继续翻倍。',rules_scoring_3:'娱乐赛只记录胜负，不改变积分。',rules_pvp_title:'线上 PVP',rules_pvp_1:'房主创建房间，可设置密码、玩法和比赛轮数。',rules_pvp_2:'玩家加入后，房主开始实时比赛。',rules_pvp_3:'PVP 基本分为 1，每轮自动结算，总分最高者获胜。'},
+ zh:{app_title:'斗地主 WebSocket',login:'登录账号',register:'注册账号',username:'用户名',password:'密码',password_hint:'聚焦此密码框时按 Control+P 可显示或隐藏密码。',ai_demo:'AI 对战',start_demo:'开始演示',welcome:'欢迎',local_ai:'本地 AI 对战',stats:'查看战绩',online_pvp:'线上 PVP',rules:'阅读规则',logout:'退出登录',start_game:'开始游戏',back:'返回',create_room:'创建房间',join_room:'加入房间',disband_room:'解散房间',room_name:'房间名',room_password_optional:'房间密码（可空）',refresh:'刷新',rooms:'房间列表',game_table:'游戏桌',your_hand:'你的手牌',log:'日志',mode_classic:'二打一',mode_extended:'三打一',ranked:'积分赛',casual:'娱乐赛',start_match:'开始比赛',seat:'座位',empty:'空',landlord:'地主',farmer:'农民',connected:'在线',disconnected:'离线',waiting:'等待中',playing:'游戏中',finished:'已结束',completed:'已完成',lobby:'大厅',bid:'叫分',no_bid:'不叫',call_landlord:'叫地主',dont_call:'不叫',rob_landlord:'抢地主',dont_rob:'不抢',reveal:'摊打',dont_reveal:'不摊打',report:'报道',dont_report:'不报道',play:'出牌',pass:'过牌',round:'轮',score:'分数',winner:'胜利者',base_score:'基本分',multiplier:'倍率',bomb:'炸弹/王炸',reveal_factor:'摊打',redeal_factor:'荒番',report_factor:'报道',marker_factor:'标记王',marker_card:'标记牌',marker_holder:'标记牌玩家',bottom_cards:'底牌',spring:'春天',reverse_spring:'反春天',total:'总分',small_joker:'小王',big_joker:'大王',single:'单张',pair:'对子',trio:'三张',trio_single:'三带一',trio_pair:'三带二',straight:'顺子',pair_straight:'连对',trio_straight:'飞机不带',airplane_single:'飞机带单',airplane_pair:'飞机带对',four_two_single:'四带二',four_two_pair:'四带两对',rocket:'王炸',room_created:'房间已创建。',room_joined:'已加入房间。',room_disbanded:'房间已解散，所有玩家已回到大厅。',login_success:'登录成功。',register_success:'注册成功。',logged_out:'已退出登录。',login_required:'请先登录。',stats_updated:'战绩已更新。',pvp_started:'PVP 比赛已开始。',pvp_round_finished:'PVP 本轮已结算。',pvp_match_finished:'PVP 比赛已结束。',ranked_entry_ok:'可以进入积分赛。',ranked_entry_denied:'不能进入积分赛。',room_join_failed:'加入房间失败。',pvp_already_playing:'该 PVP 正在比赛中。',pvp_seat_failed:'创建 PVP 座位失败。',error:'错误',rules_classic_title:'目标：二打一',rules_classic_1:'经典模式共有 3 名玩家。1 人是地主，另外 2 人是农民，农民属于同一队。',rules_classic_2:'使用 54 张牌。每人先拿 17 张，剩下 3 张作为底牌，之后交给地主。',rules_classic_3:'拿到标记牌的玩家先决定是否叫地主。有人叫地主后，后面的玩家可以选择抢地主。',rules_classic_4:'叫抢结束后，最终地主拿走 3 张底牌，并由地主先出牌。',rules_classic_5:'地主先出完手牌则地主胜；任意农民先出完手牌则农民队胜。',rules_extended_title:'三打一模式',rules_extended_1:'三打一共有 4 名玩家。1 人是地主，3 人是农民。',rules_extended_2:'使用两副牌。每人 25 张，地主获得 8 张底牌。',rules_extended_3:'地主可以选择摊打，也就是亮出手牌；这样风险更大，但会增加倍数。',rules_extended_4:'部分强手牌可以报道或双报道，报道会继续增加倍数。',rules_extended_5:'农民能用炸弹的次数和叫分有关，叫得越高通常可用炸弹次数越多。',rules_extended_6:'三打一中的顺子规则更宽，允许 A2345 这样的顺子。',rules_turn_title:'一轮出牌怎么进行',rules_turn_1:'一轮开始时，领出玩家可以出任意合法牌型。',rules_turn_2:'后面的玩家必须出同牌型且更大的牌，或者选择过牌。',rules_turn_3:'炸弹可以压普通牌型；王炸是最强牌型，可以压过炸弹和普通牌型。',rules_turn_4:'如果其他玩家都过牌，最后成功出牌的玩家重新领出，开启新一轮。',rules_turn_5:'在网页里点击手牌选牌，再按出牌；如果不想出或压不过，就按过牌。',rules_combo_title:'常见牌型',rules_combo_1:'单张是一张牌；对子是两张同点数牌；三张是三张同点数牌。',rules_combo_2:'三带一/三带二是三张同点数牌，再带一张单牌或一个对子。',rules_combo_3:'顺子是至少五张连续单牌；连对是至少三组连续对子。',rules_combo_4:'飞机是连续的三张组合，可以不带，也可以带单牌或对子。',rules_combo_5:'炸弹是四张或更多同点数牌；王炸由王牌组成，是最强牌。',rules_scoring_title:'计分',rules_scoring_1:'本地积分赛初始 1200 分，至少 200 分才能参加。',rules_scoring_2:'低于 200 分时，每天最多可以自动补分到 1200 分两次。',rules_scoring_3:'本地积分赛基本分是 50，线上 PVP 基本分是 1。',rules_scoring_4:'叫分是基础倍数。炸弹/王炸、摊打、荒番、报道、春天、反春天和标记王都会继续翻倍。',rules_scoring_5:'娱乐赛只记录胜负，不改变积分。',rules_pvp_title:'线上 PVP',rules_pvp_1:'房主创建房间，可以设置密码、玩法和比赛轮数。',rules_pvp_2:'其他玩家在房间列表中找到房间，有密码则输入密码后加入。',rules_pvp_3:'座位满后，房主点击开始比赛，所有玩家在网页中按顺序出牌。',rules_pvp_4:'每轮结束后系统自动结算分数；所有轮数结束后，总分最高者获胜。'},
  es:{login:'Iniciar sesión',register:'Registrarse',ai_demo:'Partida IA',local_ai:'IA local',stats:'Estadísticas',online_pvp:'PVP en línea',rules:'Reglas',logout:'Salir',password_hint:'Pulsa Control+P en este campo para mostrar u ocultar la contraseña.'},
  fr:{login:'Connexion',register:'Créer un compte',ai_demo:'Partie IA',local_ai:'IA locale',stats:'Statistiques',online_pvp:'PVP en ligne',rules:'Règles',logout:'Déconnexion',password_hint:'Appuyez sur Control+P dans ce champ pour afficher ou masquer le mot de passe.'},
  pt:{login:'Entrar',register:'Registrar',ai_demo:'Jogo IA',local_ai:'IA local',stats:'Estatísticas',online_pvp:'PVP online',rules:'Regras',logout:'Sair',password_hint:'Pressione Control+P neste campo para mostrar ou ocultar a senha.'},
@@ -559,9 +623,10 @@ function startAiDemo(){showView('game');send({type:'start_ai_demo',mode:val('dem
 function startLocal(){showView('game');send({type:'start_local_ai_match',mode:val('localMode'),match_type:val('localMatch')})}
 function createPvp(){send({type:'pvp_create_room',room_name:val('pvpRoomName'),password:val('pvpRoomPass'),mode:val('pvpMode'),max_rounds:Number(val('pvpRounds')||1)})}
 function joinPvp(){send({type:'pvp_join_room',room_name:val('joinPvpName'),password:val('joinPvpPass')})}
-function renderRooms(rooms){rooms=(rooms||[]).filter(Boolean);const box=document.getElementById('rooms');box.innerHTML=rooms.map((r,i)=>`<div class="room-card"><b>${r.room_name}</b> <span class="pill">${tr(r.mode_key)}</span> <span class="pill">${tr(r.status)||r.status}</span><div>${tr('round')}: ${r.current_round}/${r.max_rounds}</div><div>${tr('score')}: ${Object.entries(r.scores||{}).map(([n,s])=>n+':'+s).join(' ')}</div><div>${(r.seats||[]).map(s=>`${tr('seat')} ${s.seat+1}: ${s.username}`).join(' | ')}</div><button onclick="chooseRoom(${i})">${tr('join_room')}</button>${state.username===r.owner_username?` <button onclick="startRoomFromList(${i})">${tr('start_match')}</button>`:''}</div>`).join('');state.lastRooms=rooms}
+function renderRooms(rooms){rooms=(rooms||[]).filter(Boolean);const box=document.getElementById('rooms');box.innerHTML=rooms.map((r,i)=>`<div class="room-card"><b>${r.room_name}</b> <span class="pill">${tr(r.mode_key)}</span> <span class="pill">${tr(r.status)||r.status}</span><div>${tr('round')}: ${r.current_round}/${r.max_rounds}</div><div>${tr('score')}: ${Object.entries(r.scores||{}).map(([n,s])=>n+':'+s).join(' ')}</div><div>${(r.seats||[]).map(s=>`${tr('seat')} ${s.seat+1}: ${s.username}`).join(' | ')}</div><button onclick="chooseRoom(${i})">${tr('join_room')}</button>${state.username===r.owner_username?` <button onclick="startRoomFromList(${i})">${tr('start_match')}</button> <button class="danger" onclick="disbandRoomFromList(${i})">${tr('disband_room')}</button>`:''}</div>`).join('');state.lastRooms=rooms}
 function chooseRoom(i){const r=(state.lastRooms||[])[i];if(!r)return;document.getElementById('joinPvpName').value=r.room_name;joinPvp()}
 function startRoomFromList(i){const r=(state.lastRooms||[])[i];if(!r)return;state.pvpRoom=r.room_name;send({type:'pvp_start_match',room_name:state.pvpRoom})}
+function disbandRoomFromList(i){const r=(state.lastRooms||[])[i];if(!r)return;state.pvpRoom=r.room_name;send({type:'pvp_disband_room',room_name:r.room_name})}
 function renderPlayers(players=[]){document.getElementById('players').innerHTML=players.map(p=>`<span class="pill">${tr('seat')} ${p.seat+1}: ${p.username||tr('empty')} ${tr(p.role||'farmer')} ${p.hand_size||0}</span>`).join('')}
 function renderHand(){const h=document.getElementById('hand');h.innerHTML=state.cards.map((c,i)=>`<span id="card-${i}" class="card ${state.selected.has(i)?'selected':''}" onclick="toggleCard(${i})">${localizeCard(c)}</span>`).join('');document.getElementById('cardCount').textContent=state.cards.length}
 function toggleCard(i){state.selected.has(i)?state.selected.delete(i):state.selected.add(i);renderHand()}
@@ -575,6 +640,7 @@ case'stats_result':showStats(p.stats);break;
 case'rules_result':showRules(p);break;
 case'pvp_rooms':renderRooms(p.rooms);break;
 case'pvp_room':state.pvpRoom=p.room&&p.room.room_name;showView('pvp');if(p.room)renderRooms([p.room]);logText((p.ok?reason(p):`${tr('error')}: ${reason(p)}`));break;
+case'pvp_room_disbanded':state.pvpRoom=null;state.roomId=null;state.seat=null;showView(state.username?'home':'auth');renderRooms([]);logText(reason(p));break;
 case'pvp_match_started':state.pvpRoom=p.room&&p.room.room_name;showView('game');logText(p.ok?reason(p):`${tr('error')}: ${reason(p)}`);break;
 case'local_game_created':state.roomId=p.room_id;state.seat=p.seat;showView('game');break;
 case'room_created':case'room_joined':state.roomId=p.room_id;state.seat=p.seat;showView('game');logLine(m.type==='room_created'?'room_created':'room_joined');break;
@@ -860,11 +926,19 @@ async def websocket_endpoint(ws: WebSocket):
                     await send_ws(ws, "error", {"message_key": "login_required"}, request_id)
                     continue
                 try:
-                    ok, message = pvp_manager.disband_room(session.username, data.get("room_name") or session.pvp_room_name or "")
+                    ok, message = await disband_pvp_room_for_all(
+                        data.get("room_name") or session.pvp_room_name or "",
+                        session.username,
+                    )
                 except SupabaseError as exc:
                     await send_ws(ws, "error", {"message_key": "error", "message": str(exc)}, request_id)
                     continue
-                await send_ws(ws, "pvp_room", {"ok": ok, "message": message, "message_key": "error" if not ok else "logged_out", "room": None}, request_id)
+                await send_ws(ws, "pvp_room_disbanded" if ok else "error", {
+                    "ok": ok,
+                    "message": message,
+                    "message_key": "room_disbanded" if ok else "error",
+                    "room": None,
+                }, request_id)
 
             elif msg_type == "create_room":
                 username = (data.get("username") or "player").strip()[:30]
