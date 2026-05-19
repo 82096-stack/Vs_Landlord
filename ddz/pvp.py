@@ -16,8 +16,20 @@ ROOM_STATUS_COMPLETED = "completed"
 
 
 class PvpManager:
+    """Thin persistence layer for PvP rooms.
+
+    DB stores only metadata + final results. Live game state lives
+    exclusively in GameRoom memory (ddz/game_room.py).
+
+    Writes use state_version for optimistic concurrency control.
+    """
+
     def __init__(self, supabase_client: SupabaseClient | None = None) -> None:
         self.client = supabase_client or SupabaseClient(SUPABASE_PVP_KEY)
+
+    # ------------------------------------------------------------------
+    # Room CRUD
+    # ------------------------------------------------------------------
 
     def create_room(
         self,
@@ -46,7 +58,6 @@ class PvpManager:
             }
         ]
         scores = {owner_username: 0}
-        state = self._initial_state(mode, max_rounds, seats, scores)
         payload = {
             "room_name": room_name,
             "owner_username": owner_username,
@@ -58,8 +69,7 @@ class PvpManager:
             "seats": seats,
             "scores": scores,
             "current_turn": owner_username,
-            "last_play": None,
-            "state": state,
+            "state_version": 1,
             "winner_username": None,
         }
         rows = self.client.insert(ROOMS_TABLE, payload)
@@ -95,28 +105,21 @@ class PvpManager:
             return False, "房间已满。", room
 
         next_seat = self._first_open_seat(seats, MODE_RULES[room["mode"]]["player_count"])
-        seats.append(
-            {
-                "seat": next_seat,
-                "username": username,
-                "ready": True,
-                "joined_at": self._now(),
-            }
-        )
+        seats.append({
+            "seat": next_seat,
+            "username": username,
+            "ready": True,
+            "joined_at": self._now(),
+        })
         seats.sort(key=lambda item: item["seat"])
         scores = dict(room.get("scores") or {})
         scores.setdefault(username, 0)
-        state = dict(room.get("state") or {})
-        state["turn_order"] = [seat["username"] for seat in seats]
 
+        version = int(room.get("state_version", 0))
         room = self._patch_room(
             room_name,
-            {
-                "seats": seats,
-                "scores": scores,
-                "state": state,
-                "current_turn": state["turn_order"][0],
-            },
+            {"seats": seats, "scores": scores, "current_turn": seats[0]["username"]},
+            expected_version=version,
         )
         self._record_event(room_name, "player_joined", username, {"seat": next_seat})
         return True, "加入房间成功。", room
@@ -145,70 +148,26 @@ class PvpManager:
         if len(seats) != required:
             return False, f"人数不足，需要 {required} 人才能开始。", room
         scores = {seat["username"]: 0 for seat in seats}
-        state = self._initial_state(room["mode"], room["max_rounds"], seats, scores)
-        state["phase"] = "playing"
-        state["round"] = 1
-        state["turn_order"] = [seat["username"] for seat in seats]
+        version = int(room.get("state_version", 0))
         room = self._patch_room(
             room_name,
             {
                 "status": ROOM_STATUS_PLAYING,
                 "current_round": 1,
                 "scores": scores,
-                "current_turn": state["turn_order"][0],
-                "last_play": None,
-                "state": state,
+                "current_turn": seats[0]["username"],
                 "winner_username": None,
             },
+            expected_version=version,
         )
         self._record_event(room_name, "room_started", username, {"round": 1})
         return True, "比赛开始。", room
 
-    def record_play(
-        self,
-        room_name: str,
-        username: str,
-        cards: str,
-        combo: str,
-    ) -> tuple[bool, str, dict | None]:
-        room = self.get_room(room_name)
-        if room is None:
-            return False, "房间不存在。", None
-        if room["status"] != ROOM_STATUS_PLAYING:
-            return False, "房间不在比赛中。", room
-        if room.get("current_turn") != username:
-            return False, f"还没有轮到你，当前轮到 {room.get('current_turn')}。", room
+    # ------------------------------------------------------------------
+    # Final result persistence (only called when game ends)
+    # ------------------------------------------------------------------
 
-        seats = sorted(room.get("seats") or [], key=lambda item: item["seat"])
-        turn_order = [seat["username"] for seat in seats]
-        current_position = turn_order.index(username)
-        next_username = turn_order[(current_position + 1) % len(turn_order)]
-        play = {
-            "round": room["current_round"],
-            "username": username,
-            "cards": cards.strip() or "过牌",
-            "combo": combo.strip() or "未填写",
-            "played_at": self._now(),
-        }
-        state = dict(room.get("state") or {})
-        plays = list(state.get("plays") or [])
-        plays.append(play)
-        state["plays"] = plays[-200:]
-        state["last_play"] = play
-        state["current_turn"] = next_username
-
-        room = self._patch_room(
-            room_name,
-            {
-                "current_turn": next_username,
-                "last_play": play,
-                "state": state,
-            },
-        )
-        self._record_event(room_name, "play_recorded", username, play)
-        return True, "出牌记录已上传。", room
-
-    def finish_round(
+    def record_final_result(
         self,
         room_name: str,
         username: str,
@@ -216,6 +175,7 @@ class PvpManager:
         landlord_won: bool,
         multiplier: int,
     ) -> tuple[bool, str, dict | None]:
+        """Persist final round result. Only owner can call this after a round ends."""
         room = self.get_room(room_name)
         if room is None:
             return False, "房间不存在。", None
@@ -243,19 +203,7 @@ class PvpManager:
         completed = current_round >= max_rounds
         winner_username = max(scores, key=lambda item: (scores[item], item)) if completed else None
         next_round = current_round if completed else current_round + 1
-        state = dict(room.get("state") or {})
-        state["round"] = next_round
-        state["scores"] = scores
-        state["last_round"] = {
-            "round": current_round,
-            "landlord": landlord_username,
-            "landlord_won": landlord_won,
-            "multiplier": multiplier,
-            "settled_at": self._now(),
-        }
-        state["plays"] = []
-        state["phase"] = "completed" if completed else "playing"
-        current_turn = usernames[0]
+        version = int(room.get("state_version", 0))
 
         room = self._patch_room(
             room_name,
@@ -263,11 +211,10 @@ class PvpManager:
                 "status": ROOM_STATUS_COMPLETED if completed else ROOM_STATUS_PLAYING,
                 "current_round": next_round,
                 "scores": scores,
-                "current_turn": current_turn,
-                "last_play": None,
-                "state": state,
+                "current_turn": usernames[0],
                 "winner_username": winner_username,
             },
+            expected_version=version,
         )
         self._record_event(
             room_name,
@@ -285,9 +232,24 @@ class PvpManager:
         message = f"比赛结束，胜利者是 {winner_username}。" if completed else f"第 {current_round} 轮已结算。"
         return True, message, room
 
-    def _patch_room(self, room_name: str, payload: dict) -> dict:
-        rows = self.client.update(ROOMS_TABLE, {"room_name": eq(room_name)}, payload)
-        return rows[0] if rows else self.get_room(room_name)
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _patch_room(self, room_name: str, payload: dict, expected_version: int | None = None) -> dict:
+        if expected_version is not None:
+            payload["state_version"] = expected_version + 1
+            filters = {
+                "room_name": eq(room_name),
+                "state_version": eq(str(expected_version)),
+            }
+        else:
+            filters = {"room_name": eq(room_name)}
+        rows = self.client.update(ROOMS_TABLE, filters, payload)
+        if not rows:
+            # version mismatch — re-read and return current state
+            return self.get_room(room_name) or {}
+        return rows[0]
 
     def _record_event(self, room_name: str, event_type: str, actor_username: str, payload: dict) -> None:
         self.client.insert(
@@ -299,19 +261,6 @@ class PvpManager:
                 "payload": payload,
             },
         )
-
-    @staticmethod
-    def _initial_state(mode: str, max_rounds: int, seats: list[dict], scores: dict[str, int]) -> dict:
-        return {
-            "mode": mode,
-            "max_rounds": max_rounds,
-            "round": 0,
-            "phase": "lobby",
-            "turn_order": [seat["username"] for seat in seats],
-            "scores": scores,
-            "plays": [],
-            "last_play": None,
-        }
 
     @staticmethod
     def _first_open_seat(seats: list[dict], player_count: int) -> int:
