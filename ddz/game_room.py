@@ -19,6 +19,7 @@ from ddz.rules import (
     deal_cards,
     identify_combo,
 )
+from ddz.settlement import PVP_BASE_SCORE, build_settlement, score_deltas
 
 
 def _generate_room_id() -> str:
@@ -74,6 +75,7 @@ class GameRoom:
         self.seats: dict[int, SeatInfo] = {}
         self.state = "waiting"  # waiting | playing | finished
         self.game_task: asyncio.Task | None = None
+        self.observers: list[WebSocket] = []
 
         self._ai_engine = RuleBasedAI()
         self._response_events: dict[int, asyncio.Event] = {}
@@ -87,6 +89,14 @@ class GameRoom:
         self.current_turn: int | None = None
         self.last_combo: Combo | None = None
         self.last_player_index: int | None = None
+        self.highest_bid: int = 0
+        self.effective_bid: int = 0
+        self.redeal_count: int = 0
+        self.report_multiplier: int = 0
+        self.play_counts: list[int] = [0] * self.max_players
+        self.base_score: int = PVP_BASE_SCORE
+        self.match_kind: str = "casual"
+        self.round_finished_callback = None
 
     # ------------------------------------------------------------------
     # Unified message envelope
@@ -157,6 +167,11 @@ class GameRoom:
 
     async def _broadcast(self, type_: str, payload: dict, exclude: int | None = None, request_id: str | None = None) -> None:
         envelope = self._envelope(type_, payload, request_id)
+        for observer in list(self.observers):
+            try:
+                await observer.send_json(envelope)
+            except Exception:
+                self.observers.remove(observer)
         for idx, seat in list(self.seats.items()):
             if idx == exclude:
                 continue
@@ -211,6 +226,10 @@ class GameRoom:
         event = self._response_events.get(seat_index)
         if event:
             event.set()
+
+    def add_observer(self, ws: WebSocket) -> None:
+        if ws not in self.observers:
+            self.observers.append(ws)
 
     # ------------------------------------------------------------------
     # Seat management
@@ -358,6 +377,11 @@ class GameRoom:
 
             self.bombs_played = 0
             self.landlord_index = None
+            self.highest_bid = 0
+            self.effective_bid = 0
+            self.redeal_count = 0
+            self.report_multiplier = 0
+            self.play_counts = [0] * self.max_players
 
             dealer_round = 1
             while dealer_round <= 5:
@@ -365,8 +389,11 @@ class GameRoom:
                 if await self._bidding_phase(players):
                     break
                 dealer_round += 1
+                self.redeal_count += 1
                 await self._broadcast("redeal", {
                     "message": f"无人叫地主，重新发牌 (第{dealer_round - 1}次)。",
+                    "message_key": "redeal",
+                    "params": {"round": dealer_round - 1},
                 })
 
             if self.landlord_index is None:
@@ -487,6 +514,7 @@ class GameRoom:
             await self._broadcast("no_bidder", {"message": "无人叫地主。"})
             return False
 
+        self.highest_bid = highest_bid
         self.landlord_index = highest_idx
         await self._assign_landlord(players)
         return True
@@ -618,6 +646,7 @@ class GameRoom:
 
         self.landlord_index = candidate_idx
         players[candidate_idx].bid_score = max(players[candidate_idx].bid_score, 1)
+        self.highest_bid = max(1, max(player.bid_score for player in players))
         await self._assign_landlord(players)
         return True
 
@@ -627,6 +656,7 @@ class GameRoom:
         landlord.role = "landlord"
         landlord.hand.extend(self.bottom_cards)
         landlord.sort_hand()
+        self.effective_bid = max(1, self.highest_bid)
         self.knowledge.set_landlord(self.landlord_index, self.bottom_cards)
 
         await self._broadcast("landlord_assigned", {
@@ -656,6 +686,8 @@ class GameRoom:
             reveal = self._ai_engine.choose_reveal(landlord.hand, self.mode, "landlord")
 
         landlord.revealed = reveal
+        if reveal and self.mode == "extended":
+            self.effective_bid = max(self.effective_bid, 4)
         await self._broadcast("reveal_result", {
             "seat": self.landlord_index,
             "player_name": landlord.name,
@@ -680,6 +712,7 @@ class GameRoom:
             if announce:
                 player.announced = True
                 player.report_level = report_level
+                self.report_multiplier += report_level
                 label = "双报道" if report_level >= 2 else "报道"
                 await self._broadcast("report_result", {
                     "seat": idx,
@@ -816,6 +849,7 @@ class GameRoom:
             if combo.kind in {"bomb", "rocket"}:
                 self.bombs_played += 1
                 player.bombs_used += 1
+            self.play_counts[self.current_turn] += 1
 
             if self.knowledge:
                 self.knowledge.record_play(self.current_turn, combo, opened_round)
@@ -866,6 +900,21 @@ class GameRoom:
     async def _end_phase(self, players: list[Player], winner_idx: int) -> None:
         winner = players[winner_idx]
         landlord_won = winner.role == "landlord"
+        settlement = build_settlement(
+            players=players,
+            winner=winner,
+            landlord_index=self.landlord_index,
+            base_score=self.base_score,
+            highest_bid=self.highest_bid,
+            effective_bid=self.effective_bid,
+            bombs_played=self.bombs_played,
+            redeal_count=self.redeal_count,
+            report_multiplier=self.report_multiplier,
+            marked_card=self.marked_card,
+            play_counts=self.play_counts,
+            score_enabled=self.match_kind != "casual_no_score",
+        )
+        deltas = score_deltas(players, settlement, self.landlord_index, landlord_won)
         all_hands = {}
         for i, p in enumerate(players):
             all_hands[self.seats[i].username] = _hand_summary(p.hand)
@@ -878,6 +927,11 @@ class GameRoom:
             "landlord_name": players[self.landlord_index].name if self.landlord_index is not None else "",
             "landlord_won": landlord_won,
             "bombs_played": self.bombs_played,
+            "highest_bid": self.highest_bid,
+            "settlement": settlement,
+            "score_deltas": deltas,
             "final_hands": all_hands,
         })
+        if self.round_finished_callback is not None:
+            await self.round_finished_callback(self, players, winner_idx, settlement, deltas)
         self.state = "finished"
