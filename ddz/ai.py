@@ -1029,7 +1029,18 @@ class EndgameSolver:
             (p.hand_size for p in players if p.hand and p.hand != own_hand),
             default=0,
         )
-        return total_unknown <= 12 and max_opponent <= 7
+        min_any = min(
+            (p.hand_size for p in players if p.hand),
+            default=99,
+        )
+        if total_unknown <= 12 and max_opponent <= 7:
+            return True
+        # Broader activation: any player very close to winning
+        if min_any <= 4:
+            return True
+        if total_unknown <= 18 and max_opponent <= 8:
+            return True
+        return False
 
     def solve(
         self,
@@ -1319,7 +1330,7 @@ class EndgameSolver:
 
 class MCTSEngine:
 
-    def __init__(self, exploration_weight: float = 1.8, time_limit: float = 1.5) -> None:
+    def __init__(self, exploration_weight: float = 1.8, time_limit: float = 2.0) -> None:
         self.exploration_weight = exploration_weight
         self.time_limit = time_limit
         self._root: MCTSNode | None = None
@@ -1334,12 +1345,18 @@ class MCTSEngine:
     ) -> bool:
         if context.endgame:
             return True
+        if context.game_phase == GAME_PHASE_ENDGAME:
+            return True
         if last_combo and last_combo.kind not in {"bomb", "rocket"} and not context.urgent_block:
             if context.opponent_bomb_threat >= 1.0:
                 return True
         if context.is_landlord and context.control_margin < 1.0:
             return True
         if not context.is_landlord and context.opponent_min_cards <= 4:
+            return True
+        if context.opponent_min_cards <= 5:
+            return True
+        if context.next_opponent_pair_scarcity > 0.6:
             return True
         return False
 
@@ -1351,7 +1368,7 @@ class MCTSEngine:
         last_player_index: int | None,
         knowledge: TableKnowledge,
         mode: str,
-        num_iterations: int = 400,
+        num_iterations: int = 600,
     ) -> list[Card] | None:
         current_index = next(i for i, p in enumerate(players) if p is player)
         own_hand = list(player.hand)
@@ -1613,6 +1630,207 @@ class MCTSEngine:
         return cards
 
 
+class BeamSearchEngine:
+    """Breadth-first beam search for structured hand play sequences.
+
+    Better than MCTS for hands with many straights, airplanes, and other
+    structured combinations where the search space is more limited.
+    """
+
+    def __init__(self, beam_width: int = 8, max_depth: int = 5, time_limit: float = 1.2) -> None:
+        self.beam_width = beam_width
+        self.max_depth = max_depth
+        self.time_limit = time_limit
+
+    def search(
+        self,
+        player: Player,
+        players: list[Player],
+        last_combo: Combo | None,
+        last_player_index: int | None,
+        knowledge: TableKnowledge,
+        mode: str,
+    ) -> list[Card] | None:
+        own_hand = list(player.hand)
+        current_index = next(i for i, p in enumerate(players) if p is player)
+
+        valid_plays = self._get_valid_plays(own_hand, last_combo, last_player_index, mode)
+        if not valid_plays:
+            return None
+
+        # Score each initial play
+        scored = []
+        for play in valid_plays:
+            combo = identify_combo(play, mode)
+            if combo is None:
+                continue
+            remaining = [c for c in own_hand if c not in play]
+            base_score = self._evaluate_position(
+                remaining, players, current_index, combo, knowledge, mode
+            )
+            scored.append((base_score, play, combo, remaining))
+
+        if not scored:
+            return None
+
+        # Beam search: keep top beam_width candidates
+        scored.sort(key=lambda x: x[0], reverse=True)
+        beam = scored[:self.beam_width]
+
+        start_time = time.time()
+        for depth in range(1, self.max_depth):
+            if time.time() - start_time > self.time_limit:
+                break
+            next_beam = []
+            for _, _, _, remaining in beam:
+                sub_plays = generate_candidate_plays(remaining, mode)
+                for sub_play in sub_plays:
+                    sub_combo = identify_combo(sub_play, mode)
+                    if sub_combo is None:
+                        continue
+                    sub_remaining = [c for c in remaining if c not in sub_play]
+                    sub_score = self._evaluate_position(
+                        sub_remaining, players, current_index, sub_combo, knowledge, mode
+                    )
+                    next_beam.append((sub_score, sub_play, sub_combo, sub_remaining))
+            if not next_beam:
+                break
+            next_beam.sort(key=lambda x: x[0], reverse=True)
+            beam = next_beam[:self.beam_width]
+
+        return beam[0][1] if beam else scored[0][1]
+
+    @staticmethod
+    def _get_valid_plays(
+        hand: list[Card],
+        last_combo: Combo | None,
+        last_player_index: int | None,
+        mode: str,
+    ) -> list[list[Card]]:
+        candidates = generate_candidate_plays(hand, mode)
+        if last_combo is None or last_player_index is None:
+            return [c.cards for c in candidates]
+        return [c.cards for c in candidates if can_beat(c, last_combo)]
+
+    @staticmethod
+    def _evaluate_position(
+        remaining: list[Card],
+        players: list[Player],
+        current_index: int,
+        last_combo: Combo,
+        knowledge: TableKnowledge,
+        mode: str,
+    ) -> float:
+        score = 0.0
+        n = len(remaining)
+
+        # Empty hand = win
+        if n == 0:
+            return 1000.0
+
+        # Prefer fewer remaining cards
+        score -= n * 3.0
+
+        # Prefer keeping bombs for last
+        bomb_count = sum(1 for c in remaining if knowledge.is_control_card(c))
+        score += bomb_count * 5.0
+
+        # Prefer structured combos in remaining
+        remaining_combos = list(generate_candidate_plays(remaining, mode))
+        if remaining_combos:
+            score -= max(0, len(remaining_combos) - 3) * 2.0
+
+        # Penalize leaving singles
+        singles = sum(1 for c in remaining if knowledge.is_control_card(c))
+        score -= (n - singles) * 0.5
+
+        return score
+
+
+class OpponentModel:
+    """Tracks and models opponent behavior patterns to adjust AI decisions.
+
+    Models aggressiveness, bluff frequency, bomb usage timing, and
+    response patterns to better predict opponent actions.
+    """
+
+    def __init__(self) -> None:
+        # Per-seat tracking
+        self._aggressiveness: dict[int, float] = {}
+        self._bomb_usage: dict[int, int] = {}
+        self._pass_count: dict[int, int] = {}
+        self._play_count: dict[int, int] = {}
+        self._high_card_frequency: dict[int, float] = {}
+        self._last_play_ranks: dict[int, list[int]] = {}
+
+    def record_play(self, seat_index: int, combo: Combo | None, is_pass: bool) -> None:
+        if is_pass or combo is None:
+            self._pass_count[seat_index] = self._pass_count.get(seat_index, 0) + 1
+            return
+
+        self._play_count[seat_index] = self._play_count.get(seat_index, 0) + 1
+
+        if combo.kind in {"bomb", "rocket"}:
+            self._bomb_usage[seat_index] = self._bomb_usage.get(seat_index, 0) + 1
+
+        # Track high card frequency
+        total = self._play_count.get(seat_index, 0) + self._pass_count.get(seat_index, 0)
+        if total > 0:
+            ranks = self._last_play_ranks.setdefault(seat_index, [])
+            ranks.append(combo.main_rank)
+            if len(ranks) > 10:
+                ranks.pop(0)
+            high_ranks = sum(1 for r in ranks if r >= 15)
+            self._high_card_frequency[seat_index] = high_ranks / len(ranks) if ranks else 0.3
+
+        # Aggressiveness: ratio of plays to total actions
+        if total > 3:
+            self._aggressiveness[seat_index] = (
+                self._play_count[seat_index] / total
+            )
+
+    def aggressiveness(self, seat_index: int) -> float:
+        return self._aggressiveness.get(seat_index, 0.5)
+
+    def bomb_likelihood(self, seat_index: int) -> float:
+        plays = self._play_count.get(seat_index, 0)
+        if plays == 0:
+            return 0.15
+        return min(0.6, self._bomb_usage.get(seat_index, 0) / plays)
+
+    def high_card_tendency(self, seat_index: int) -> float:
+        return self._high_card_frequency.get(seat_index, 0.3)
+
+    def pass_rate(self, seat_index: int) -> float:
+        total = self._play_count.get(seat_index, 0) + self._pass_count.get(seat_index, 0)
+        if total == 0:
+            return 0.5
+        return self._pass_count.get(seat_index, 0) / total
+
+    def adjust_threshold(self, base_threshold: float, seat_index: int, is_landlord: bool) -> float:
+        """Adjust a scoring threshold based on opponent behavior."""
+        agg = self.aggressiveness(seat_index)
+        bomb_lik = self.bomb_likelihood(seat_index)
+        pass_rate = self.pass_rate(seat_index)
+
+        adjusted = base_threshold
+        # Aggressive opponents: lower threshold (play more)
+        if agg > 0.65:
+            adjusted -= 6.0
+        elif agg < 0.35:
+            adjusted += 4.0
+
+        # Bomb-prone opponents: raise threshold for non-bomb plays
+        if bomb_lik > 0.3 and not is_landlord:
+            adjusted += 3.0
+
+        # High pass rate opponents: lower threshold (they will likely pass)
+        if pass_rate > 0.6:
+            adjusted -= 5.0
+
+        return adjusted
+
+
 class RuleBasedAI:
 
     COMBO_PRIORITY = {
@@ -1635,6 +1853,8 @@ class RuleBasedAI:
     def __init__(self) -> None:
         self.endgame_solver = EndgameSolver()
         self.mcts_engine = MCTSEngine()
+        self.beam_engine = BeamSearchEngine()
+        self.opponent_model = OpponentModel()
 
     def choose_bid(self, hand: list[Card], mode: str, current_high: int) -> int:
         strength = self._estimate_landlord_strength(hand, mode)
@@ -1749,6 +1969,23 @@ class RuleBasedAI:
         non_bomb_responses = [c for c in responses if c.kind not in {"bomb", "rocket"}]
         has_regular_response = len(non_bomb_responses) > 0
 
+        # Landlord with few cards: always take a winning play
+        if player.role == "landlord" and player.hand_size <= 4:
+            winning = [c for c in responses if self._leaves_no_cards(player.hand, c)]
+            if winning:
+                # Prefer non-bomb winning plays
+                non_bomb_winning = [c for c in winning if c.kind not in {"bomb", "rocket"}]
+                chosen = non_bomb_winning[0] if non_bomb_winning else winning[0]
+                return chosen.cards
+            # If can't win but only has few cards, prefer non-bomb responses
+            if non_bomb_responses:
+                scored_responses = [
+                    (self._score_response_play(player.hand, c, last_combo, context, table, players), c)
+                    for c in non_bomb_responses
+                ]
+                best = max(scored_responses, key=lambda x: (x[0], -x[1].main_rank))
+                return best[1].cards
+
         same_kind_regular = any(
             c for c in responses
             if c.kind == last_combo.kind and c.kind not in {"bomb", "rocket"}
@@ -1760,6 +1997,18 @@ class RuleBasedAI:
                 )
                 if endgame_result is not None:
                     return endgame_result
+
+        # Try beam search for structured hands (many straights/planes)
+        structured_count = sum(
+            1 for c in candidates if c.kind in {"straight", "pair_straight", "trio_straight",
+                                                 "airplane_single", "airplane_pair"}
+        )
+        if structured_count >= 3 and has_regular_response:
+            beam_result = self.beam_engine.search(
+                player, players, last_combo, last_player_index, table, table.mode
+            )
+            if beam_result is not None:
+                return beam_result
 
         multiple_kinds = len({c.kind for c in responses if c.kind not in {"bomb", "rocket"}}) > 1
         if self.mcts_engine.should_use_mcts(context, last_combo, players, player.hand):
@@ -1996,7 +2245,7 @@ class RuleBasedAI:
         opponent_min_cards = min(opponent_sizes) if opponent_sizes else 99
         teammate_min_cards = min(teammate_sizes) if teammate_sizes else 99
         urgent_block = last_player_cards <= 2 or opponent_min_cards <= 1
-        endgame = player.hand_size <= 6
+        endgame = player.hand_size <= 6 or opponent_min_cards <= 4 or teammate_min_cards <= 3
 
         landlord_index = knowledge.landlord_index
         if landlord_index is None:
@@ -2215,6 +2464,10 @@ class RuleBasedAI:
             if last_combo.kind in {"bomb", "rocket"}:
                 return score < 24.0
             return not context.urgent_block and not context.endgame
+
+        # Farmer: when teammate has 1-2 cards, pass aggressively to let teammate win
+        if context.teammate_min_cards <= 2:
+            return True
 
         threshold = 44.0
         if last_combo.kind in {"single", "pair", "trio"}:
@@ -2577,6 +2830,9 @@ class RuleBasedAI:
                     penalty += 8.0
                 if combo.kind in {"single", "pair"} and combo.main_rank >= 15:
                     penalty *= 0.35
+                # Stronger penalty when opponent is about to win
+                if context.opponent_min_cards <= 1 and opening:
+                    penalty *= 1.6
                 score -= penalty
             elif combo.total_cards > context.opponent_min_cards:
                 score += 8.0 if opening else 4.0
@@ -2585,11 +2841,18 @@ class RuleBasedAI:
             if combo.total_cards == context.teammate_min_cards:
                 score += 48.0 if opening else 30.0
                 if context.teammate_min_cards == 1 and combo.kind == "single":
-                    score += 14.0
+                    score += 28.0  # boosted from 14
+                    # Extra bonus for low singles (easier for teammate to beat)
+                    if combo.main_rank <= 10:
+                        score += 10.0
                 elif context.teammate_min_cards == 2 and combo.kind == "pair":
-                    score += 14.0
+                    score += 20.0  # boosted from 14
             elif combo.total_cards > context.teammate_min_cards and combo.kind in STRUCTURED_KINDS:
-                score -= 18.0 if opening else 8.0
+                # Much stronger penalty for blocking teammate's win with a complex combo
+                penalty = 40.0 if opening else 20.0  # increased from 18/8
+                if context.teammate_min_cards == 1:
+                    penalty += 30.0  # never block teammate with 1 card
+                score -= penalty
         return score
 
     def _support_bonus(self, combo: Combo, context: PlayContext) -> float:
