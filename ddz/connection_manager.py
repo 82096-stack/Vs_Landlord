@@ -226,6 +226,7 @@ class ConnectionManager:
         if not human_left and room.state == "playing":
             await room._broadcast("all_disconnected", {
                 "message": "所有玩家已断开，房间将在5分钟后清理。",
+                "message_key": "all_disconnected",
             })
 
         return room_id, seat_index, recovery_token
