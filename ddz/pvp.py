@@ -41,13 +41,13 @@ class PvpManager:
     ) -> tuple[bool, str, dict | None]:
         room_name = room_name.strip()
         if not 2 <= len(room_name) <= 30:
-            return False, "房间名称长度需要在 2 到 30 个字符之间。", None
+            return False, "room_name_length", None
         if mode not in MODE_RULES:
-            return False, "斗地主形式不合法。", None
+            return False, "invalid_mode", None
         if not 1 <= max_rounds <= 50:
-            return False, "比赛轮数需要在 1 到 50 之间。", None
+            return False, "invalid_rounds", None
         if self.get_room(room_name) is not None:
-            return False, "房间名已经存在，请换一个名称。", None
+            return False, "room_name_exists", None
 
         seats = [
             {
@@ -75,7 +75,7 @@ class PvpManager:
         rows = self.client.insert(ROOMS_TABLE, payload)
         room = rows[0] if rows else payload
         self._record_event(room_name, "room_created", owner_username, {"mode": mode, "max_rounds": max_rounds})
-        return True, "房间创建成功。", room
+        return True, "room_created", room
 
     def list_rooms(self) -> list[dict]:
         return self.client.select(
@@ -92,17 +92,17 @@ class PvpManager:
     def join_room(self, username: str, room_name: str, password: str) -> tuple[bool, str, dict | None]:
         room = self.get_room(room_name)
         if room is None:
-            return False, "房间不存在。", None
+            return False, "room_not_found", None
         if room["status"] != ROOM_STATUS_LOBBY:
-            return False, "该房间已经开始或结束，不能加入。", room
+            return False, "room_not_lobby", room
         if room.get("password") and not self._verify_password(password, room["password"]):
-            return False, "房间密码错误。", room
+            return False, "wrong_password", room
 
         seats = list(room.get("seats") or [])
         if any(seat["username"] == username for seat in seats):
-            return True, "你已经在该房间中。", room
+            return True, "already_in_room", room
         if len(seats) >= MODE_RULES[room["mode"]]["player_count"]:
-            return False, "房间已满。", room
+            return False, "room_full", room
 
         next_seat = self._first_open_seat(seats, MODE_RULES[room["mode"]]["player_count"])
         seats.append({
@@ -122,31 +122,31 @@ class PvpManager:
             expected_version=version,
         )
         self._record_event(room_name, "player_joined", username, {"seat": next_seat})
-        return True, "加入房间成功。", room
+        return True, "room_joined", room
 
     def disband_room(self, username: str, room_name: str) -> tuple[bool, str]:
         room = self.get_room(room_name)
         if room is None:
-            return False, "房间不存在或已经被删除。"
+            return False, "room_not_found"
         if room["owner_username"] != username:
-            return False, "只有房主可以解散房间。"
+            return False, "not_owner"
         self.client.delete(EVENTS_TABLE, {"room_name": eq(room_name)})
         self.client.delete(ROOMS_TABLE, {"room_name": eq(room_name)})
-        return True, "房间已解散，房间数据已删除。"
+        return True, "room_disbanded"
 
     def start_room(self, username: str, room_name: str) -> tuple[bool, str, dict | None]:
         room = self.get_room(room_name)
         if room is None:
-            return False, "房间不存在。", None
+            return False, "room_not_found", None
         if room["owner_username"] != username:
-            return False, "只有房主可以开始比赛。", room
+            return False, "not_owner", room
         if room["status"] != ROOM_STATUS_LOBBY:
-            return False, "该房间不能重复开始。", room
+            return False, "room_already_started", room
 
         seats = sorted(room.get("seats") or [], key=lambda item: item["seat"])
         required = MODE_RULES[room["mode"]]["player_count"]
         if len(seats) != required:
-            return False, f"人数不足，需要 {required} 人才能开始。", room
+            return False, "not_enough_players", room
         scores = {seat["username"]: 0 for seat in seats}
         version = int(room.get("state_version", 0))
         room = self._patch_room(
@@ -161,7 +161,7 @@ class PvpManager:
             expected_version=version,
         )
         self._record_event(room_name, "room_started", username, {"round": 1})
-        return True, "比赛开始。", room
+        return True, "pvp_started", room
 
     # ------------------------------------------------------------------
     # Final result persistence (only called when game ends)
@@ -178,16 +178,16 @@ class PvpManager:
         """Persist final round result. Only owner can call this after a round ends."""
         room = self.get_room(room_name)
         if room is None:
-            return False, "房间不存在。", None
+            return False, "room_not_found", None
         if room["owner_username"] != username:
-            return False, "只有房主可以录入本轮结算。", room
+            return False, "not_owner", room
         if room["status"] != ROOM_STATUS_PLAYING:
-            return False, "房间不在比赛中。", room
+            return False, "room_not_playing", room
         multiplier = max(1, multiplier)
         seats = sorted(room.get("seats") or [], key=lambda item: item["seat"])
         usernames = [seat["username"] for seat in seats]
         if landlord_username not in usernames:
-            return False, "地主用户名不在房间中。", room
+            return False, "landlord_not_in_room", room
 
         scores = dict(room.get("scores") or {})
         farmer_count = len(usernames) - 1
@@ -229,7 +229,7 @@ class PvpManager:
                 "winner": winner_username,
             },
         )
-        message = f"比赛结束，胜利者是 {winner_username}。" if completed else f"第 {current_round} 轮已结算。"
+        message = "match_completed" if completed else "round_finished"
         return True, message, room
 
     # ------------------------------------------------------------------
