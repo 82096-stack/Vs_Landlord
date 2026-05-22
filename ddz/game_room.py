@@ -394,11 +394,14 @@ class GameRoom:
                     "message": f"无人叫地主，重新发牌 (第{dealer_round - 1}次)。",
                     "message_key": "redeal",
                     "params": {"round": dealer_round - 1},
+                    "description": f"No one bid for landlord, redealing (attempt {dealer_round - 1}).",
                 })
 
             if self.landlord_index is None:
                 await self._broadcast("error", {
                     "message": "多次发牌后仍无人叫地主，游戏结束。",
+                    "message_key": "no_landlord_after_redeals",
+                    "description": "After multiple redeals, no one bid for landlord. Game aborted.",
                 })
                 self.state = "finished"
                 return
@@ -438,6 +441,7 @@ class GameRoom:
             "marker_holder_seat": marker_holder,
             "marker_holder_name": players[marker_holder].name if marker_holder is not None else "",
             "bottom_count": len(self.bottom_cards),
+            "description": f"Cards dealt. Marked card: {self.marked_card.label if self.marked_card else '?'}. {players[marker_holder].name if marker_holder is not None else '?'} holds the marked card and will bid first.",
         })
 
         for i, seat in self.seats.items():
@@ -475,6 +479,7 @@ class GameRoom:
                 "seat": idx,
                 "player_name": player.name,
                 "highest_bid": highest_bid,
+                "description": f"{player.name}'s turn to bid (current highest: {highest_bid}).",
             })
 
             if seat.is_human:
@@ -497,10 +502,15 @@ class GameRoom:
             player.bid_score = bid
             player.bid_participated = True
 
+            bid_desc = f"{player.name} bids {bid}." if bid > 0 else f"{player.name} passes on bidding."
+            if bid > highest_bid:
+                bid_desc += f" New highest bid: {bid}."
             await self._broadcast("bid_result", {
                 "seat": idx,
                 "player_name": player.name,
                 "bid": bid,
+                "description": bid_desc,
+                "highest_bid": max(highest_bid, bid),
             })
 
             if bid > highest_bid:
@@ -511,7 +521,10 @@ class GameRoom:
                 break
 
         if highest_idx is None or highest_bid == 0:
-            await self._broadcast("no_bidder", {"message": "无人叫地主。"})
+            await self._broadcast("no_bidder", {
+                "message": "无人叫地主。",
+                "message_key": "no_bidder",
+            })
             return False
 
         self.highest_bid = highest_bid
@@ -539,6 +552,7 @@ class GameRoom:
                 "seat": idx,
                 "player_name": player.name,
                 "phase": "call",
+                "description": f"{player.name}'s turn to call landlord.",
             })
 
             if seat.is_human:
@@ -554,10 +568,12 @@ class GameRoom:
             player.bid_score = 1 if wants else 0
             player.bid_participated = True
 
+            call_desc = f"{player.name} calls landlord." if wants else f"{player.name} does not call."
             await self._broadcast("call_result", {
                 "seat": idx,
                 "player_name": player.name,
                 "call": wants,
+                "description": call_desc,
             })
 
             if wants:
@@ -566,7 +582,10 @@ class GameRoom:
                 break
 
         if candidate_idx is None:
-            await self._broadcast("no_bidder", {"message": "无人叫地主。"})
+            await self._broadcast("no_bidder", {
+                "message": "无人叫地主。",
+                "message_key": "no_bidder",
+            })
             return False
 
         last_robber_idx: int | None = None
@@ -580,6 +599,7 @@ class GameRoom:
                 "player_name": player.name,
                 "phase": "rob",
                 "highest_bid": current_bid,
+                "description": f"{player.name}'s turn to rob landlord (current bid: {current_bid}).",
             })
 
             if seat.is_human:
@@ -594,10 +614,12 @@ class GameRoom:
                 rob = self._ai_engine.choose_rob(player.hand, self.mode, desires[idx], current_bid)
 
             player.bid_participated = True
+            rob_desc = f"{player.name} robs the landlord." if rob else f"{player.name} does not rob."
             await self._broadcast("rob_result", {
                 "seat": idx,
                 "player_name": player.name,
                 "rob": rob,
+                "description": rob_desc,
             })
 
             if rob:
@@ -663,6 +685,7 @@ class GameRoom:
             "seat": self.landlord_index,
             "player_name": landlord.name,
             "bottom_cards": _hand_summary(self.bottom_cards),
+            "description": f"{landlord.name} becomes the landlord and receives {len(self.bottom_cards)} bottom cards: {format_cards(self.bottom_cards)}.",
         })
 
         for i, seat in self.seats.items():
@@ -747,6 +770,7 @@ class GameRoom:
                 await self._broadcast("new_round", {
                     "leader_seat": self.current_turn,
                     "leader_name": players[self.current_turn].name,
+                    "description": f"Everyone else passed. {players[self.current_turn].name} starts a new trick.",
                 })
                 self.last_combo = None
 
@@ -756,6 +780,12 @@ class GameRoom:
             has_human = any(s.is_human for s in self.seats.values())
 
             # Notify other players whose turn it is
+            turn_desc = f"It's {player.name}'s turn."
+            if opened_round:
+                turn_desc += " New trick — free play."
+            elif self.last_combo is not None:
+                last_name = players[self.last_player_index].name if self.last_player_index is not None else "?"
+                turn_desc += f" Must beat {last_name}'s {self.last_combo.describe()}."
             await self._broadcast("play_turn", {
                 "seat": self.current_turn,
                 "player_name": player.name,
@@ -764,6 +794,7 @@ class GameRoom:
                 "last_player_seat": self.last_player_index,
                 "last_player_name": players[self.last_player_index].name if self.last_player_index is not None else None,
                 "combo_display": self.last_combo.describe() if self.last_combo else None,
+                "description": turn_desc,
             }, exclude=self.current_turn)
 
             if seat.is_human:
@@ -794,12 +825,14 @@ class GameRoom:
 
             if action == "pass":
                 if not opened_round:
+                    pass_desc = f"{player.name} passes. ({player.hand_size} cards remaining)"
                     await self._broadcast("play_action", {
                         "seat": self.current_turn,
                         "player_name": player.name,
                         "action": "pass",
                         "remaining_count": player.hand_size,
                         "current_turn": (self.current_turn + 1) % len(players),
+                        "description": pass_desc,
                     })
                     self.current_turn = (self.current_turn + 1) % len(players)
                     continue
@@ -807,12 +840,14 @@ class GameRoom:
             indices = resp.get("cards", []) if resp else []
             if not isinstance(indices, (list, tuple)) or not indices:
                 if not opened_round:
+                    pass_desc = f"{player.name} passes. ({player.hand_size} cards remaining)"
                     await self._broadcast("play_action", {
                         "seat": self.current_turn,
                         "player_name": player.name,
                         "action": "pass",
                         "remaining_count": player.hand_size,
                         "current_turn": (self.current_turn + 1) % len(players),
+                        "description": pass_desc,
                     })
                     self.current_turn = (self.current_turn + 1) % len(players)
                     continue
@@ -826,18 +861,21 @@ class GameRoom:
             if combo is None:
                 await self._send_to(self.current_turn, "error", {
                     "message": "无效牌型，请重新选择。",
+                    "message_key": "invalid_combo",
                 })
                 continue
 
             if self.last_combo is not None and not can_beat(combo, self.last_combo):
                 await self._send_to(self.current_turn, "error", {
                     "message": "这组牌压不过当前牌型。",
+                    "message_key": "cannot_beat",
                 })
                 continue
 
             if not self._check_bomb_limit(player, combo):
                 await self._send_to(self.current_turn, "error", {
                     "message": "炸弹/王炸次数已用完。",
+                    "message_key": "bomb_limit_exceeded",
                 })
                 continue
 
@@ -859,6 +897,7 @@ class GameRoom:
 
             next_turn = (self.current_turn + 1) % len(players)
 
+            play_desc = f"{player.name} plays {combo.describe()}: {format_cards(selected)}. ({player.hand_size} cards left)"
             # Enriched play_action — complete info for UI rendering
             await self._broadcast("play_action", {
                 "seat": self.current_turn,
@@ -870,6 +909,7 @@ class GameRoom:
                 "current_turn": next_turn,
                 "last_combo": _combo_dict(self.last_combo),
                 "combo_display": combo.describe(),
+                "description": play_desc,
             })
 
             if not player.hand:
@@ -931,6 +971,7 @@ class GameRoom:
             "settlement": settlement,
             "score_deltas": deltas,
             "final_hands": all_hands,
+            "description": f"Game over! {winner.name} ({winner.role}) wins. Landlord {'won' if landlord_won else 'lost'}. Final scores: {deltas}.",
         })
         if self.round_finished_callback is not None:
             await self.round_finished_callback(self, players, winner_idx, settlement, deltas)
