@@ -35,6 +35,9 @@ PROFILE_DEFAULTS = {
     "ranked_wins": 0,
     "ranked_losses": 0,
     "ranked_games": 0,
+    "pvp_wins": 0,
+    "pvp_losses": 0,
+    "pvp_games": 0,
     "casual_wins": 0,
     "casual_losses": 0,
     "casual_games": 0,
@@ -160,6 +163,20 @@ class AccountManager:
             else:
                 profile["casual_losses"] += 1
 
+        user["profile"] = self._protect_profile(profile)
+        self._save(data)
+
+    def record_pvp_result(self, username: str, won: bool) -> None:
+        data = self._load()
+        user = data["users"].get(username)
+        if not user:
+            return
+        profile = dict(user["profile"])
+        profile["pvp_games"] = int(profile.get("pvp_games", 0)) + 1
+        if won:
+            profile["pvp_wins"] = int(profile.get("pvp_wins", 0)) + 1
+        else:
+            profile["pvp_losses"] = int(profile.get("pvp_losses", 0)) + 1
         user["profile"] = self._protect_profile(profile)
         self._save(data)
 
@@ -381,6 +398,10 @@ class AccountManager:
         wins = int(profile["wins"])
         ranked_games = int(profile["ranked_games"])
         casual_games = int(profile["casual_games"])
+        pvp_games = int(profile.get("pvp_games", 0))
+        pvp_wins = int(profile.get("pvp_wins", 0))
+        ai_games = ranked_games + casual_games
+        ai_wins = int(profile["ranked_wins"]) + int(profile["casual_wins"])
         return {
             "username": username,
             "games": games,
@@ -397,6 +418,13 @@ class AccountManager:
             "casual_wins": int(profile["casual_wins"]),
             "casual_losses": int(profile["casual_losses"]),
             "casual_win_rate": 0.0 if casual_games == 0 else int(profile["casual_wins"]) / casual_games,
+            "ai_games": ai_games,
+            "ai_wins": ai_wins,
+            "ai_win_rate": 0.0 if ai_games == 0 else ai_wins / ai_games,
+            "pvp_games": pvp_games,
+            "pvp_wins": pvp_wins,
+            "pvp_losses": int(profile.get("pvp_losses", 0)),
+            "pvp_win_rate": 0.0 if pvp_games == 0 else pvp_wins / pvp_games,
             "daily_replenish_date": profile["daily_replenish_date"],
             "daily_replenish_used": int(profile["daily_replenish_used"]),
         }
