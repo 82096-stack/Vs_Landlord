@@ -387,16 +387,25 @@ class GameSession:
 
     def _print_match_result(self, winner: Player) -> None:
         landlord_name = self.players[self.landlord_index].name if self.landlord_index is not None else "未知"
-        print("\n对局结束。")
+        print("\n" + "=" * 50)
+        print("对局结束")
+        print("=" * 50)
         if winner.role == "landlord":
-            print(f"地主 {winner.name} 获胜。")
+            print(f"胜方: 地主阵营")
+            print(f"获胜玩家: {winner.name} (地主)")
         else:
-            print(f"农民阵营获胜，首个出完的是 {winner.name}。")
+            print(f"胜方: 农民阵营")
+            print(f"获胜玩家: {winner.name} (农民)")
         print(f"地主: {landlord_name}")
+        print(f"炸弹/王炸数: {self.bombs_played}")
+        print(f"荒番次数: {self.redeal_count}")
+        print("-" * 50)
         print("最终手牌:")
         for player in self.players:
             remaining = format_cards(player.hand) if player.hand else "已出完"
-            print(f"- {player.name}: {remaining}")
+            role_tag = " [地主]" if player.role == "landlord" else " [农民]"
+            print(f"  {player.name}{role_tag}: {remaining}")
+        print("-" * 50)
 
     @staticmethod
     def _remove_cards(player: Player, selected: Iterable[Card]) -> None:
