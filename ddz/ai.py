@@ -380,6 +380,9 @@ class TableKnowledge:
     def control_cards(self, hand: list[Card]) -> int:
         return sum(1 for card in hand if card.rank in HIGH_CONTROL_RANKS)
 
+    def is_control_card(self, card: Card) -> bool:
+        return card.rank in HIGH_CONTROL_RANKS
+
     def possible_opponent_bomb_ranks(
         self,
         current_index: int,
@@ -1683,11 +1686,9 @@ class BeamSearchEngine:
                 break
             next_beam = []
             for _, _, _, remaining in beam:
-                sub_plays = generate_candidate_plays(remaining, mode)
-                for sub_play in sub_plays:
-                    sub_combo = identify_combo(sub_play, mode)
-                    if sub_combo is None:
-                        continue
+                sub_combos = generate_candidate_plays(remaining, mode)
+                for sub_combo in sub_combos:
+                    sub_play = sub_combo.cards
                     sub_remaining = [c for c in remaining if c not in sub_play]
                     sub_score = self._evaluate_position(
                         sub_remaining, players, current_index, sub_combo, knowledge, mode
