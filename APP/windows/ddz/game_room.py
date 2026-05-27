@@ -17,6 +17,7 @@ from ddz.rules import (
     can_beat,
     choose_marked_card,
     deal_cards,
+    generate_candidate_plays,
     identify_combo,
 )
 from ddz.settlement import PVP_BASE_SCORE, build_settlement, score_deltas
@@ -796,6 +797,7 @@ class GameRoom:
                 "combo_display": self.last_combo.describe() if self.last_combo else None,
                 "description": turn_desc,
             }, exclude=self.current_turn)
+            await asyncio.sleep(0)
 
             if seat.is_human:
                 resp = await self._ask_player(self.current_turn, "ask_play", {
@@ -808,20 +810,25 @@ class GameRoom:
                 })
 
                 action = resp.get("action") if resp else "pass"
+                selected = []
             else:
                 if self.knowledge is None:
                     self.knowledge = TableKnowledge(self.mode, len(players))
                 if not has_human:
                     self.knowledge.init_beliefs(players, player.hand)
-                chosen = self._ai_engine.choose_play(
-                    player, players, self.last_combo, self.last_player_index, self.knowledge,
-                )
-                action = "play" if chosen else "pass"
-                if chosen:
-                    serial_to_idx = {c.serial: i for i, c in enumerate(player.hand)}
-                    resp = {"cards": [serial_to_idx[c.serial] for c in chosen if c.serial in serial_to_idx]}
+                    selected = self._fallback_ai_play(player, opened_round)
                 else:
-                    resp = {}
+                    chosen = await asyncio.to_thread(
+                        self._ai_engine.choose_play,
+                        player,
+                        players,
+                        self.last_combo,
+                        self.last_player_index,
+                        self.knowledge,
+                    )
+                    selected = self._sanitize_ai_play(player, chosen, opened_round)
+                action = "play" if selected else "pass"
+                resp = {}
 
             if action == "pass":
                 if not opened_round:
@@ -837,9 +844,50 @@ class GameRoom:
                     self.current_turn = (self.current_turn + 1) % len(players)
                     continue
 
-            indices = resp.get("cards", []) if resp else []
-            if not isinstance(indices, (list, tuple)) or not indices:
-                if not opened_round:
+            if seat.is_human:
+                indices = resp.get("cards", []) if resp else []
+                if not isinstance(indices, (list, tuple)) or not indices:
+                    if not opened_round:
+                        pass_desc = f"{player.name} passes. ({player.hand_size} cards remaining)"
+                        await self._broadcast("play_action", {
+                            "seat": self.current_turn,
+                            "player_name": player.name,
+                            "action": "pass",
+                            "remaining_count": player.hand_size,
+                            "current_turn": (self.current_turn + 1) % len(players),
+                            "description": pass_desc,
+                        })
+                        self.current_turn = (self.current_turn + 1) % len(players)
+                        continue
+                selected = [player.hand[i] for i in indices if 0 <= i < len(player.hand)]
+
+            if not selected:
+                if not seat.is_human and not opened_round:
+                    pass_desc = f"{player.name} passes. ({player.hand_size} cards remaining)"
+                    await self._broadcast("play_action", {
+                        "seat": self.current_turn,
+                        "player_name": player.name,
+                        "action": "pass",
+                        "remaining_count": player.hand_size,
+                        "current_turn": (self.current_turn + 1) % len(players),
+                        "description": pass_desc,
+                    })
+                self.current_turn = (self.current_turn + 1) % len(players)
+                continue
+
+            combo = identify_combo(selected, self.mode)
+            if combo is None:
+                if not seat.is_human:
+                    self.current_turn = (self.current_turn + 1) % len(players)
+                    continue
+                await self._send_to(self.current_turn, "error", {
+                    "message": "无效牌型，请重新选择。",
+                    "message_key": "invalid_combo",
+                })
+                continue
+
+            if self.last_combo is not None and not can_beat(combo, self.last_combo):
+                if not seat.is_human:
                     pass_desc = f"{player.name} passes. ({player.hand_size} cards remaining)"
                     await self._broadcast("play_action", {
                         "seat": self.current_turn,
@@ -851,21 +899,6 @@ class GameRoom:
                     })
                     self.current_turn = (self.current_turn + 1) % len(players)
                     continue
-
-            selected = [player.hand[i] for i in indices if 0 <= i < len(player.hand)]
-            if not selected:
-                self.current_turn = (self.current_turn + 1) % len(players)
-                continue
-
-            combo = identify_combo(selected, self.mode)
-            if combo is None:
-                await self._send_to(self.current_turn, "error", {
-                    "message": "无效牌型，请重新选择。",
-                    "message_key": "invalid_combo",
-                })
-                continue
-
-            if self.last_combo is not None and not can_beat(combo, self.last_combo):
                 await self._send_to(self.current_turn, "error", {
                     "message": "这组牌压不过当前牌型。",
                     "message_key": "cannot_beat",
@@ -873,6 +906,9 @@ class GameRoom:
                 continue
 
             if not self._check_bomb_limit(player, combo):
+                if not seat.is_human:
+                    self.current_turn = (self.current_turn + 1) % len(players)
+                    continue
                 await self._send_to(self.current_turn, "error", {
                     "message": "炸弹/王炸次数已用完。",
                     "message_key": "bomb_limit_exceeded",
@@ -920,6 +956,81 @@ class GameRoom:
                 return self.current_turn
 
             self.current_turn = next_turn
+
+    def _sanitize_ai_play(
+        self,
+        player: Player,
+        chosen: list[Card] | None,
+        opened_round: bool,
+    ) -> list[Card] | None:
+        selected = self._cards_from_current_hand(player, chosen or [])
+        if self._is_legal_ai_selection(player, selected, opened_round):
+            return selected
+        return self._fallback_ai_play(player, opened_round)
+
+    def _cards_from_current_hand(self, player: Player, chosen: list[Card]) -> list[Card]:
+        by_serial = {card.serial: card for card in player.hand}
+        selected: list[Card] = []
+        used: set[int] = set()
+        for card in chosen:
+            if card.serial in by_serial and card.serial not in used:
+                selected.append(by_serial[card.serial])
+                used.add(card.serial)
+        return selected
+
+    def _is_legal_ai_selection(self, player: Player, selected: list[Card], opened_round: bool) -> bool:
+        if not selected:
+            return False
+        combo = identify_combo(selected, self.mode)
+        if combo is None:
+            return False
+        if not opened_round and self.last_combo is not None and not can_beat(combo, self.last_combo):
+            return False
+        return self._check_bomb_limit(player, combo)
+
+    def _fallback_ai_play(self, player: Player, opened_round: bool) -> list[Card] | None:
+        candidates = [
+            combo
+            for combo in generate_candidate_plays(player.hand, self.mode)
+            if self._check_bomb_limit(player, combo)
+        ]
+        if not candidates:
+            return None
+
+        if opened_round or self.last_combo is None:
+            finishing = [combo for combo in candidates if len(combo.cards) == player.hand_size]
+            if finishing:
+                return max(finishing, key=lambda combo: (combo.total_cards, combo.main_rank)).cards
+            regular = [combo for combo in candidates if combo.kind not in {"bomb", "rocket"}]
+            pool = regular or candidates
+            return max(pool, key=lambda combo: (combo.total_cards, -self._combo_sort_weight(combo), -combo.main_rank)).cards
+
+        responses = [combo for combo in candidates if can_beat(combo, self.last_combo)]
+        if not responses:
+            return None
+        regular = [combo for combo in responses if combo.kind not in {"bomb", "rocket"}]
+        pool = regular or responses
+        return min(pool, key=lambda combo: (self._combo_sort_weight(combo), combo.total_cards, combo.main_rank, combo.bomb_size)).cards
+
+    @staticmethod
+    def _combo_sort_weight(combo: Combo) -> int:
+        weights = {
+            "single": 1,
+            "pair": 2,
+            "trio": 3,
+            "trio_single": 4,
+            "trio_pair": 5,
+            "straight": 6,
+            "pair_straight": 7,
+            "trio_straight": 8,
+            "airplane_single": 9,
+            "airplane_pair": 10,
+            "four_two_single": 11,
+            "four_two_pair": 12,
+            "bomb": 90,
+            "rocket": 100,
+        }
+        return weights.get(combo.kind, 50)
 
     def _check_bomb_limit(self, player: Player, combo: Combo) -> bool:
         if self.mode != "extended":
