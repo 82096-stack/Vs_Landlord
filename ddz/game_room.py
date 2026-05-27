@@ -430,6 +430,7 @@ class GameRoom:
         self.marked_card = choose_marked_card(self.mode)
         self.bottom_cards = deal_cards(players, self.mode, self.marked_card)
         self.knowledge = TableKnowledge(self.mode, len(players))
+        all_ai = not any(seat.is_human for seat in self.seats.values())
 
         marker_holder = None
         for i, p in enumerate(players):
@@ -442,6 +443,10 @@ class GameRoom:
             "marker_holder_seat": marker_holder,
             "marker_holder_name": players[marker_holder].name if marker_holder is not None else "",
             "bottom_count": len(self.bottom_cards),
+            "player_hands": [
+                {"seat": i, "player_name": player.name, "cards": _hand_summary(player.hand)}
+                for i, player in enumerate(players)
+            ] if all_ai else [],
             "description": f"Cards dealt. Marked card: {self.marked_card.label if self.marked_card else '?'}. {players[marker_holder].name if marker_holder is not None else '?'} holds the marked card and will bid first.",
         })
 
@@ -686,6 +691,7 @@ class GameRoom:
             "seat": self.landlord_index,
             "player_name": landlord.name,
             "bottom_cards": _hand_summary(self.bottom_cards),
+            "hand": _hand_summary(landlord.hand) if not any(seat.is_human for seat in self.seats.values()) else [],
             "description": f"{landlord.name} becomes the landlord and receives {len(self.bottom_cards)} bottom cards: {format_cards(self.bottom_cards)}.",
         })
 
