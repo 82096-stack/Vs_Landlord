@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 from collections import Counter
 from typing import Iterable
@@ -45,7 +46,8 @@ def build_deck(mode: str) -> list[Card]:
 def deal_cards(players: list[Player], mode: str, marked_card: Card | None = None) -> list[Card]:
     rules = MODE_RULES[mode]
     deck = build_deck(mode)
-    random.shuffle(deck)
+    rng = random.SystemRandom()
+    rng.shuffle(deck)
     if marked_card is not None:
         _move_marked_card_out_of_bottom(deck, marked_card, rules["hand_size"] * len(players))
     for player in players:
@@ -62,7 +64,7 @@ def deal_cards(players: list[Player], mode: str, marked_card: Card | None = None
 
 
 def choose_marked_card(mode: str) -> Card:
-    return random.choice(build_deck(mode))
+    return random.SystemRandom().choice(build_deck(mode))
 
 
 def identify_combo(cards: Iterable[Card], mode: str = "classic") -> Combo | None:
@@ -74,7 +76,7 @@ def identify_combo(cards: Iterable[Card], mode: str = "classic") -> Combo | None
     ranks = sorted(counts)
     total = len(sorted_cards)
 
-    if _is_rocket(counts, total):
+    if _is_rocket(counts, total, mode):
         return Combo("rocket", sorted_cards, main_rank=17)
 
     if len(counts) == 1 and total >= 4:
@@ -194,16 +196,18 @@ def generate_candidate_plays(hand: list[Card], mode: str = "classic") -> list[Co
                     )
                 )
 
-    if 16 in grouped and 17 in grouped:
-        combos.append(Combo("rocket", [grouped[16][0], grouped[17][0]], main_rank=17))
-    if len(grouped.get(16, [])) >= 2 and len(grouped.get(17, [])) >= 2:
-        combos.append(
-            Combo(
-                "rocket",
-                [grouped[16][0], grouped[16][1], grouped[17][0], grouped[17][1]],
-                main_rank=17,
+    if mode == "extended":
+        if len(grouped.get(16, [])) >= 2 and len(grouped.get(17, [])) >= 2:
+            combos.append(
+                Combo(
+                    "rocket",
+                    [grouped[16][0], grouped[16][1], grouped[17][0], grouped[17][1]],
+                    main_rank=17,
+                )
             )
-        )
+    else:
+        if 16 in grouped and 17 in grouped:
+            combos.append(Combo("rocket", [grouped[16][0], grouped[17][0]], main_rank=17))
 
     combos.extend(_generate_straight_candidates(grouped, mode))
     combos.extend(_generate_pair_straight_candidates(grouped))
@@ -228,7 +232,7 @@ def _move_marked_card_out_of_bottom(deck: list[Card], marked_card: Card, deal_re
     )
     if marker_index is None or marker_index < deal_region_size:
         return
-    swap_index = random.randrange(deal_region_size)
+    swap_index = random.SystemRandom().randrange(deal_region_size)
     deck[marker_index], deck[swap_index] = deck[swap_index], deck[marker_index]
 
 
@@ -257,12 +261,12 @@ def _dedupe_combos(combos: list[Combo]) -> list[Combo]:
     return deduped
 
 
-def _is_rocket(counts: Counter[int], total: int) -> bool:
+def _is_rocket(counts: Counter[int], total: int, mode: str = "classic") -> bool:
     if set(counts) != {16, 17}:
         return False
-    if total == 2 and counts[16] == 1 and counts[17] == 1:
-        return True
-    return total == 4 and counts[16] == 2 and counts[17] == 2
+    if mode == "extended":
+        return total == 4 and counts[16] == 2 and counts[17] == 2
+    return total == 2 and counts[16] == 1 and counts[17] == 1
 
 
 def _rank_with_count(counts: Counter[int], target_count: int) -> int | None:
