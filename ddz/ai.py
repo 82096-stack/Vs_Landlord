@@ -1862,21 +1862,21 @@ class RuleBasedAI:
         farmer_dominance = self._estimate_farmer_dominance(hand, mode)
         control_count = self._control_card_count(hand)
         thresholds = {
-            "classic": [15.0, 21.0, 27.0],
-            "extended": [21.0, 28.0, 35.0],
+            "classic": [19.0, 26.0, 33.0],
+            "extended": [27.0, 35.0, 43.0],
         }[mode]
 
         bid = self._project_bid_level(strength, thresholds)
 
         if current_high == 0 and bid >= 2:
             if (
-                farmer_dominance >= strength * 0.94
+                farmer_dominance >= strength * 0.90
                 and control_count >= (4 if mode == "classic" else 5)
                 and strength < thresholds[-1] + 4.0
             ):
                 bid = 0 if mode == "classic" else max(0, bid - 1)
         elif current_high == 0 and bid == 0:
-            if farmer_dominance >= thresholds[0] + 1.0 and control_count >= (4 if mode == "classic" else 5):
+            if farmer_dominance >= thresholds[0] + 3.0 and control_count >= (5 if mode == "classic" else 7):
                 bid = 1
 
         if bid <= current_high:
@@ -1885,8 +1885,8 @@ class RuleBasedAI:
 
     def preview_bid_strength(self, hand: list[Card], mode: str) -> int:
         thresholds = {
-            "classic": [15.0, 21.0, 27.0],
-            "extended": [21.0, 28.0, 35.0],
+            "classic": [19.0, 26.0, 33.0],
+            "extended": [27.0, 35.0, 43.0],
         }[mode]
         return self._project_bid_level(self._estimate_landlord_strength(hand, mode), thresholds)
 
@@ -1899,9 +1899,9 @@ class RuleBasedAI:
     ) -> bool:
         strength = self._estimate_landlord_strength(hand, mode)
         farmer_dominance = self._estimate_farmer_dominance(hand, mode)
-        strong_enough = strength >= (22.0 if mode == "classic" else 30.0)
+        strong_enough = strength >= (27.0 if mode == "classic" else 36.0)
         clear_upgrade = self_desire >= current_landlord_bid + 1
-        if farmer_dominance >= strength * 0.98 and self._control_card_count(hand) >= 5 and strength < 28.0:
+        if farmer_dominance >= strength * 0.98 and self._control_card_count(hand) >= 5 and strength < 32.0:
             return False
         return strong_enough or clear_upgrade
 
@@ -2173,7 +2173,7 @@ class RuleBasedAI:
                 ),
             )
 
-        if context.last_player_cards <= 2:
+        if context.last_player_cards <= 3:
             return None
 
         responses = [
@@ -2182,6 +2182,9 @@ class RuleBasedAI:
             if can_beat(combo, last_combo) and combo.kind not in {"bomb", "rocket"}
         ]
         if not responses:
+            return None
+
+        if context.last_player_is_teammate and last_combo.kind in {"single", "pair"} and last_combo.main_rank <= 10:
             return None
 
         if context.game_phase == GAME_PHASE_ENDGAME:
@@ -2351,7 +2354,7 @@ class RuleBasedAI:
         if context.next_player_is_landlord and combo.kind in {"single", "pair"} and combo.main_rank <= 9:
             score -= 7.5
         if combo.kind in {"single", "pair"} and combo.main_rank >= 14 and not context.next_player_is_landlord:
-            score -= 6.0 + context.control_margin * 0.6
+            score -= 12.0 + context.control_margin * 1.2
 
         return score
 
@@ -2413,7 +2416,7 @@ class RuleBasedAI:
             else:
                 score -= 6.0
         if combo.kind in {"single", "pair"} and combo.main_rank >= 15 and not context.urgent_block:
-            score -= 12.0
+            score -= 20.0
 
         score += self._game_phase_response_adjustment(combo, last_combo, context)
 
@@ -2424,7 +2427,7 @@ class RuleBasedAI:
             if combo.kind in STRUCTURED_KINDS:
                 return 5.0
             if combo.kind in {"bomb", "rocket"}:
-                return -10.0
+                return -25.0
         elif context.game_phase == GAME_PHASE_LATE:
             if combo.kind in {"bomb", "rocket"} and context.control_margin < 2.0:
                 return 6.0
@@ -2466,11 +2469,11 @@ class RuleBasedAI:
                 return score < 24.0
             return not context.urgent_block and not context.endgame
 
-        # Farmer: when teammate has 1-2 cards, pass aggressively to let teammate win
+        # Farmer: when teammate has 1-2 cards, pass to let teammate win
         if context.teammate_min_cards <= 2:
             return True
 
-        threshold = 44.0
+        threshold = 38.0
         if last_combo.kind in {"single", "pair", "trio"}:
             threshold = 36.0
         if context.next_player_is_teammate:
@@ -2524,13 +2527,13 @@ class RuleBasedAI:
 
         if context.is_landlord_downstream and small_cover and turns_after <= 2:
             return True
-        if pressure.hold_probability >= 0.62 and small_cover and turns_after <= 2:
+        if pressure.hold_probability >= 0.65 and small_cover and turns_after <= 2:
             return True
-        if score >= 40.0 and small_cover and turns_after <= 2:
+        if score >= 45.0 and small_cover and turns_after <= 2:
             return True
 
         if context.game_phase == GAME_PHASE_LATE and context.last_player_cards <= 5:
-            if small_cover and turns_after <= 3:
+            if small_cover and turns_after <= 3 and pressure.hold_probability >= 0.45:
                 return True
 
         return False
@@ -3001,22 +3004,24 @@ class RuleBasedAI:
         if turns_after <= 1:
             return 0.0
 
-        penalty = 22.0
+        penalty = 36.0
         if opening and not context.endgame:
-            penalty += 8.0
+            penalty += 16.0
         if not context.urgent_block and not context.endgame:
-            penalty += 8.0
+            penalty += 12.0
+        if context.game_phase == GAME_PHASE_EARLY:
+            penalty += 14.0
         if pressure.any_opponent_pressure < 0.35:
-            penalty += 3.0
+            penalty += 6.0
         if context.opponent_bomb_threat > 0:
-            penalty += 2.0
+            penalty += 3.0
 
         if context.game_phase == GAME_PHASE_LATE:
-            penalty *= 0.65
+            penalty *= 0.6
         if context.opponent_min_cards <= 4:
-            penalty *= 0.5
+            penalty *= 0.45
         if context.urgent_block:
-            penalty *= 0.35
+            penalty *= 0.30
 
         own_bombs_left = sum(
             1 for rank, count in Counter(c.rank for c in combo.cards).items()
@@ -3044,11 +3049,11 @@ class RuleBasedAI:
             if combo.kind in {"single", "pair"} and before >= 3:
                 penalty += 5.0
             if rank >= 16 and combo.kind != "rocket":
-                penalty += used * 7.0
+                penalty += used * 12.0
             elif rank == 15 and combo.kind not in {"bomb", "rocket"}:
-                penalty += used * 4.0
+                penalty += used * 7.0
             elif rank >= 13 and combo.kind == "single":
-                penalty += 2.5
+                penalty += 4.0
 
         return penalty
 
