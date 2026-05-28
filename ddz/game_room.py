@@ -722,6 +722,8 @@ class GameRoom:
             "seat": self.landlord_index,
             "player_name": landlord.name,
             "reveal": reveal,
+            "hand": _hand_summary(landlord.hand) if reveal else [],
+            "hand_size": landlord.hand_size,
         })
 
     async def _report_phase(self, players: list[Player]) -> None:
