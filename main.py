@@ -478,7 +478,6 @@ INDEX_HTML = """<!DOCTYPE html>
   <div class="top">
     <div class="brand" data-i18n="app_title"></div>
     <div class="toolbar">
-      <span data-i18n="language_label" class="muted"></span>
       <select id="languageSelect" class="lang-menu" onchange="setLanguage(this.value)"></select>
     </div>
   </div>
@@ -522,7 +521,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
   <section id="localView" class="grid hidden">
     <div class="panel stack">
-      <h2 data-i18n="lobby"></h2>
+      <h2 data-i18n="local_ai"></h2>
       <select id="localMode"></select>
       <select id="localMatch"></select>
       <button onclick="startMatchmaking()" data-i18n="start_match"></button>
