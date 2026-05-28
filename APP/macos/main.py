@@ -511,7 +511,7 @@ INDEX_HTML = """<!DOCTYPE html>
     <div class="panel wide">
       <h2><span data-i18n="welcome"></span> <span id="who"></span></h2>
       <div class="toolbar">
-        <button onclick="showView('local')" data-i18n="lobby"></button>
+        <button onclick="showView('local')" data-i18n="local_ai"></button>
         <button onclick="send({type:'get_stats'})" data-i18n="stats"></button>
         <button onclick="showView('pvp');send({type:'pvp_list_rooms'})" data-i18n="online_pvp"></button>
         <button onclick="send({type:'get_rules'})" data-i18n="rules"></button>
