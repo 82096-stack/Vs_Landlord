@@ -2309,6 +2309,82 @@ class RuleBasedAI:
             opponent_bombs_remaining=bombs_remaining,
         )
 
+    def _reveal_opponent_adjustment(
+        self,
+        combo: Combo,
+        context: PlayContext,
+        players: list[Player],
+        knowledge: TableKnowledge,
+        opening: bool,
+    ) -> float:
+        score = 0.0
+        mode = knowledge.mode
+
+        for opp_idx, opp in enumerate(players):
+            if opp_idx == context.current_index:
+                continue
+            if not opp.revealed:
+                continue
+            if same_team(players[context.current_index], opp):
+                continue
+            if not opp.hand or opp.hand_size == 0:
+                continue
+
+            opp_can_beat = False
+            opp_can_bomb_only = True
+            for candidate in generate_candidate_plays(opp.hand, mode):
+                if can_beat(candidate, combo):
+                    opp_can_beat = True
+                    if candidate.kind not in {"bomb", "rocket"}:
+                        opp_can_bomb_only = False
+                    break
+
+            opp_counts = Counter(c.rank for c in opp.hand)
+            opp_bombs = sum(1 for cnt in opp_counts.values() if cnt >= 4)
+            opp_has_rocket = opp_counts.get(16, 0) >= 1 and opp_counts.get(17, 0) >= 1
+            opp_strength = self._estimate_landlord_strength(opp.hand, mode)
+
+            if opening:
+                if not opp_can_beat:
+                    score += 14.0
+                else:
+                    score -= 6.0
+                    if not opp_can_bomb_only:
+                        score -= 4.0
+
+                if opp_strength < 20.0:
+                    if combo.kind in STRUCTURED_KINDS:
+                        score += 4.0
+                    if combo.kind in {"single", "pair", "trio"} and combo.main_rank >= 14:
+                        score += 3.0
+                elif opp_strength > 38.0:
+                    if combo.kind in {"single", "pair"} and combo.main_rank >= 13:
+                        score -= 5.0
+                    if combo.kind in {"bomb", "rocket"}:
+                        score += 3.0
+
+                if opp_bombs >= 2 or opp_has_rocket:
+                    if combo.kind in {"bomb", "rocket"}:
+                        score -= 8.0
+            else:
+                if not opp_can_beat:
+                    if combo.kind not in {"bomb", "rocket"}:
+                        score += 10.0
+                    else:
+                        score += 6.0
+                else:
+                    if combo.kind not in {"bomb", "rocket"} and not opp_can_bomb_only:
+                        score -= 5.0
+
+                if opp.hand_size <= 3 and opp_can_beat:
+                    if combo.kind in {"bomb", "rocket"}:
+                        score += 12.0
+
+            if opp_bombs >= 2 and combo.kind in {"bomb", "rocket"}:
+                score -= 6.0
+
+        return score
+
     def _score_opening_play(
         self,
         hand: list[Card],
@@ -2355,6 +2431,8 @@ class RuleBasedAI:
             score -= 7.5
         if combo.kind in {"single", "pair"} and combo.main_rank >= 14 and not context.next_player_is_landlord:
             score -= 12.0 + context.control_margin * 1.2
+
+        score += self._reveal_opponent_adjustment(combo, context, players, knowledge, opening=True)
 
         return score
 
@@ -2419,6 +2497,7 @@ class RuleBasedAI:
             score -= 20.0
 
         score += self._game_phase_response_adjustment(combo, last_combo, context)
+        score += self._reveal_opponent_adjustment(combo, context, players, knowledge, opening=False)
 
         return score
 
