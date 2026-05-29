@@ -690,9 +690,8 @@ case'error':logText(`${tr('error')}: ${reason(p)}`);break;
 }}
 function showStats(s){if(!s)return;var aiRate=s.ai_win_rate!=null?(s.ai_win_rate*100).toFixed(1)+'%':'--';var pvpRate=s.pvp_win_rate!=null?(s.pvp_win_rate*100).toFixed(1)+'%':'--';var rank=s.rank!=null?'#'+s.rank:'--';logText(`${tr('score')}: ${s.rating||0} | AI ${tr('winner')}: ${aiRate} | PVP ${tr('winner')}: ${pvpRate} | ${tr('rank')}: ${rank}`)}
 function showRules(p){showView('rules');document.getElementById('rulesContent').innerHTML=(p.sections||[]).map(s=>`<h3>${tr(s.title_key)}</h3><ul>${s.body_keys.map(k=>`<li>${tr(k)}</li>`).join('')}</ul>`).join('')}
-function showSettlement(p){const s=p.settlement||{};actionButtons('');document.getElementById('log').textContent+=`${tr('base_score')}: ${s.base_score||'-'} · ${tr('multiplier')}: x${s.multiplier_factor||'1'} · ${tr('total')}: ${s.total_score||'-'}
-${tr('bomb')}: x${s.bomb_multiplier||1} ${tr('reveal_factor')}: x${s.reveal_multiplier||1} ${tr('redeal_factor')}: x${s.redeal_multiplier||1} ${tr('report_factor')}: x${s.report_multiplier||1}
-${tr('marker_factor')}: x${s.marker_multiplier||1} ${tr('spring')}: x${s.spring_multiplier||1} ${tr('reverse_spring')}: x${s.reverse_spring_multiplier||1}
+function showSettlement(p){const s=p.settlement||{};actionButtons('');var parts=[];if(s.bomb_multiplier)parts.push(`${tr('bomb')}: ${s.bomb_multiplier}个`);if(s.reveal_multiplier)parts.push(`${tr('reveal_factor')}: ${s.reveal_multiplier}个`);if(s.redeal_multiplier)parts.push(`${tr('redeal_factor')}: ${s.redeal_multiplier}个`);if(s.report_multiplier)parts.push(`${tr('report_factor')}: ${s.report_multiplier}个`);if(s.marker_multiplier)parts.push(`${tr('marker_factor')}: ${s.marker_multiplier}个`);if(s.spring_multiplier)parts.push(`${tr('spring')}: ${s.spring_multiplier}个`);if(s.reverse_spring_multiplier)parts.push(`${tr('reverse_spring')}: ${s.reverse_spring_multiplier}个`);var detail=parts.length?parts.join(' '):'无加倍';document.getElementById('log').textContent+=`${tr('base_score')}: ${s.base_score||'-'} · ${tr('multiplier')}: x${s.multiplier_factor||'1'} · ${tr('total')}: ${s.total_score||'-'}
+${tr('bomb')}等加倍项: ${detail}
 `}
 function connect(){state.ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws');state.ws.onopen=()=>send({type:'get_session_state',language:state.lang});state.ws.onmessage=e=>handle(JSON.parse(e.data));state.ws.onclose=()=>setTimeout(connect,1200)}
 document.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key.toLowerCase()==='p'&&document.activeElement.classList.contains('password-input')){e.preventDefault();const el=document.activeElement;el.type=el.type==='password'?'text':'password'}});
@@ -1259,11 +1258,23 @@ def print_settlement(result: dict, players: list[Player], match_type: str) -> No
         f"基本分 {settlement['base_score']} x 叫分 {settlement['bid_value']} "
         f"x 倍率 {settlement['multiplier_factor']} = {calculated_total}"
     )
-    print(
-        "加倍项: 炸弹/王炸 {bomb_multiplier}, 摊打 {reveal_multiplier}, 荒番 {redeal_multiplier}, "
-        "报道 {report_multiplier}, 标记王 {marker_multiplier}, 春天 {spring_multiplier}, "
-        "反春天 {reverse_spring_multiplier}".format(**settlement)
-    )
+    items = []
+    if settlement["bomb_multiplier"]:
+        items.append(f"炸弹/王炸 {settlement['bomb_multiplier']}个")
+    if settlement["reveal_multiplier"]:
+        items.append(f"摊打 {settlement['reveal_multiplier']}个")
+    if settlement["redeal_multiplier"]:
+        items.append(f"荒番 {settlement['redeal_multiplier']}个")
+    if settlement["report_multiplier"]:
+        items.append(f"报道 {settlement['report_multiplier']}个")
+    if settlement["marker_multiplier"]:
+        items.append(f"标记王 {settlement['marker_multiplier']}个")
+    if settlement["spring_multiplier"]:
+        items.append(f"春天 {settlement['spring_multiplier']}个")
+    if settlement["reverse_spring_multiplier"]:
+        items.append(f"反春天 {settlement['reverse_spring_multiplier']}个")
+    if items:
+        print(f"加倍项: {', '.join(items)}")
     if match_type == "casual":
         print("娱乐赛只记录胜负，不改变积分。")
         return
